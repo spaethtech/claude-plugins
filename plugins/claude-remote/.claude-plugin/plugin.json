@@ -6,6 +6,7 @@
     "name": "SpaethTech"
   },
   "keywords": ["remote-control", "tmux", "session", "daemon", "service"],
+  "commands": ["./commands/"],
   "category": "toolkit",
   "license": "MIT"
 }

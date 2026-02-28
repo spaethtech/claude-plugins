@@ -1,0 +1,11 @@
+{
+  "name": "spaethtech-plugins",
+  "owner": {
+    "name": "SpaethTech"
+  },
+  "metadata": {
+    "description": "SpaethTech Claude Code Plugins Marketplace",
+    "version": "1.0.0"
+  },
+  "plugins": []
+}

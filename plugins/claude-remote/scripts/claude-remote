@@ -153,6 +153,69 @@ cmd_list() {
   done <<< "$sessions"
 }
 
+# Get the absolute path to this script (for cron entries)
+self_path() {
+  local script_dir
+  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  echo "${script_dir}/$(basename "${BASH_SOURCE[0]}")"
+}
+
+# Build the cron command for a project directory
+cron_command_for() {
+  local dir="$1"
+  local session
+  session="$(session_name_for "$dir")"
+  echo "@reboot cd ${dir} && $(self_path) start  # claude-remote:${session}"
+}
+
+# Cron tag used to identify our entries
+cron_tag_for() {
+  local dir="$1"
+  local session
+  session="$(session_name_for "$dir")"
+  echo "claude-remote:${session}"
+}
+
+cmd_enable() {
+  local dir
+  dir="$(project_dir)"
+  local tag
+  tag="$(cron_tag_for "$dir")"
+
+  # Check if already enabled
+  if crontab -l 2>/dev/null | grep -qF "$tag"; then
+    echo "Already enabled for $(session_name_for "$dir")."
+    return 0
+  fi
+
+  local entry
+  entry="$(cron_command_for "$dir")"
+
+  # Append to existing crontab
+  (crontab -l 2>/dev/null || true; echo "$entry") | crontab -
+
+  echo "Enabled auto-start on boot for: $(session_name_for "$dir")"
+  echo "  project: $dir"
+  echo "  cron entry: $entry"
+}
+
+cmd_disable() {
+  local dir
+  dir="$(project_dir)"
+  local tag
+  tag="$(cron_tag_for "$dir")"
+
+  if ! crontab -l 2>/dev/null | grep -qF "$tag"; then
+    echo "Not enabled for $(session_name_for "$dir")."
+    return 0
+  fi
+
+  # Remove matching line from crontab
+  crontab -l 2>/dev/null | grep -vF "$tag" | crontab -
+
+  echo "Disabled auto-start on boot for: $(session_name_for "$dir")"
+}
+
 cmd_update() {
   echo "Updating Claude Code..."
   claude update
@@ -199,6 +262,8 @@ Commands:
   status      Check if a session is running for the current project
   attach      Attach to the tmux session to inspect it
   list        List all running claude-remote sessions
+  enable      Add @reboot cron entry to auto-start on boot
+  disable     Remove the @reboot cron entry
   update      Update Claude Code and optionally restart sessions
   help        Show this help message
 
@@ -216,6 +281,8 @@ case "${1:-help}" in
   status)  cmd_status ;;
   attach)  cmd_attach ;;
   list)    cmd_list ;;
+  enable)  cmd_enable ;;
+  disable) cmd_disable ;;
   update)  cmd_update ;;
   help|--help|-h) cmd_help ;;
   *)

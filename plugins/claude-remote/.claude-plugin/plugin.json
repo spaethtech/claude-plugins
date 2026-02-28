@@ -7,6 +7,7 @@
   },
   "keywords": ["remote-control", "tmux", "session", "daemon", "service"],
   "commands": ["./commands/"],
+  "skills": ["./skills/"],
   "category": "toolkit",
   "license": "MIT"
 }

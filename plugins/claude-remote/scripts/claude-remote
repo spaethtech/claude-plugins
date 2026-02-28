@@ -63,7 +63,19 @@ cmd_start() {
   echo "Starting Claude Code remote-control for: $dir"
   echo "tmux session: $session"
 
-  tmux new-session -d -s "$session" -c "$dir" "claude remote-control --continue"
+  # Build the claude command with session-log context if available
+  local claude_cmd="claude remote-control --continue"
+  local prompt
+  prompt="$(session_log_prompt)"
+  if [[ -n "$prompt" ]]; then
+    # Write prompt to a temp file so tmux doesn't mangle quoting
+    local prompt_file="${dir}/.claude/remote/.session-prompt.tmp"
+    mkdir -p "$(dirname "$prompt_file")"
+    printf '%s' "$prompt" > "$prompt_file"
+    claude_cmd="claude remote-control --continue --append-system-prompt \"\$(cat '${prompt_file}')\""
+  fi
+
+  tmux new-session -d -s "$session" -c "$dir" "$claude_cmd"
 
   echo "Session started. Connect via claude.ai or run 'claude-remote attach'."
 }
@@ -160,6 +172,22 @@ self_path() {
   echo "${script_dir}/$(basename "${BASH_SOURCE[0]}")"
 }
 
+# Get the plugin root directory (parent of scripts/)
+plugin_dir() {
+  local script_dir
+  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  echo "$(cd "${script_dir}/.." && pwd)"
+}
+
+# Load the remote-session-log skill as system prompt context
+session_log_prompt() {
+  local skill_file
+  skill_file="$(plugin_dir)/skills/remote-session-log.md"
+  if [[ -f "$skill_file" ]]; then
+    cat "$skill_file"
+  fi
+}
+
 # Build the cron command for a project directory
 cron_command_for() {
   local dir="$1"
@@ -242,7 +270,16 @@ cmd_update() {
           tmux kill-session -t "=$session" 2>/dev/null || true
         fi
         sleep 1
-        tmux new-session -d -s "$session" -c "$dir" "claude remote-control --continue"
+        local restart_cmd="claude remote-control --continue"
+        local restart_prompt
+        restart_prompt="$(session_log_prompt)"
+        if [[ -n "$restart_prompt" ]]; then
+          local prompt_file="${dir}/.claude/remote/.session-prompt.tmp"
+          mkdir -p "$(dirname "$prompt_file")"
+          printf '%s' "$restart_prompt" > "$prompt_file"
+          restart_cmd="claude remote-control --continue --append-system-prompt \"\$(cat '${prompt_file}')\""
+        fi
+        tmux new-session -d -s "$session" -c "$dir" "$restart_cmd"
         echo "  Restarted."
       fi
     done <<< "$sessions"

@@ -1,0 +1,11 @@
+{
+  "name": "claude-remote",
+  "version": "1.0.0",
+  "description": "Manage per-project Claude Code remote-control sessions via tmux. Each project gets its own persistent session that survives restarts and resumes conversation context.",
+  "author": {
+    "name": "SpaethTech"
+  },
+  "keywords": ["remote-control", "tmux", "session", "daemon", "service"],
+  "category": "toolkit",
+  "license": "MIT"
+}

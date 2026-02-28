@@ -1,0 +1,138 @@
+.main {
+  max-width: var(--max-width);
+  margin: 0 auto;
+  padding: 32px 24px 64px;
+}
+
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 24px;
+  padding-bottom: 24px;
+  border-bottom: 1px solid var(--border);
+}
+
+.titleRow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.title {
+  font-size: 1.8rem;
+  font-weight: 700;
+}
+
+.featured {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: white;
+  background: var(--featured-badge);
+  padding: 3px 10px;
+  border-radius: 12px;
+}
+
+.summary {
+  color: var(--text-muted);
+  font-size: 1.05rem;
+  margin-bottom: 12px;
+}
+
+.meta {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+.category {
+  background: var(--accent-bg);
+  color: var(--accent);
+  padding: 2px 10px;
+  border-radius: 4px;
+  font-weight: 500;
+}
+
+.actions {
+  flex-shrink: 0;
+}
+
+.repoButton {
+  display: inline-block;
+  padding: 10px 20px;
+  background: var(--accent);
+  color: white;
+  border-radius: var(--radius);
+  font-weight: 500;
+  font-size: 0.9rem;
+}
+
+.repoButton:hover {
+  background: var(--accent-hover);
+  text-decoration: none;
+  color: white;
+}
+
+.body {
+  padding-top: 24px;
+}
+
+.section {
+  margin-bottom: 32px;
+}
+
+.section h2 {
+  font-size: 1.15rem;
+  font-weight: 600;
+  margin-bottom: 12px;
+}
+
+.description {
+  line-height: 1.7;
+  color: var(--text);
+}
+
+.codeBlock {
+  background: var(--tag-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+  overflow-x: auto;
+  font-family: "SF Mono", "Fira Code", Menlo, monospace;
+  font-size: 0.85rem;
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
+.tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.tag {
+  font-size: 0.8rem;
+  background: var(--tag-bg);
+  color: var(--tag-text);
+  padding: 4px 10px;
+  border-radius: 4px;
+}
+
+.details {
+  display: grid;
+  grid-template-columns: 160px 1fr;
+  gap: 8px 16px;
+  font-size: 0.9rem;
+}
+
+.details dt {
+  font-weight: 500;
+  color: var(--text-muted);
+}
+
+.details dd {
+  color: var(--text);
+}

@@ -1,0 +1,100 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://claude-plugins.dev/schemas/plugin.schema.json",
+  "title": "Claude Code Plugin",
+  "description": "Schema for a Claude Code plugin listing in the marketplace",
+  "type": "object",
+  "required": [
+    "id",
+    "name",
+    "summary",
+    "description",
+    "category",
+    "author",
+    "version",
+    "license",
+    "repository",
+    "tags",
+    "installation",
+    "dateAdded",
+    "dateUpdated"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+      "description": "Unique identifier in kebab-case"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 100
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "description": {
+      "type": "string",
+      "minLength": 1
+    },
+    "category": {
+      "type": "string",
+      "enum": ["mcp-server", "slash-command", "hook", "custom-instructions", "toolkit"]
+    },
+    "author": {
+      "type": "object",
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string" },
+        "github": { "type": "string" },
+        "url": { "type": "string", "format": "uri" }
+      }
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+(-[a-zA-Z0-9.]+)?$"
+    },
+    "license": {
+      "type": "string"
+    },
+    "repository": {
+      "type": "string",
+      "format": "uri"
+    },
+    "tags": {
+      "type": "array",
+      "items": { "type": "string" },
+      "minItems": 1,
+      "maxItems": 10
+    },
+    "installation": {
+      "type": "string"
+    },
+    "configSnippet": {
+      "type": "string"
+    },
+    "minClaudeCodeVersion": {
+      "type": "string"
+    },
+    "dateAdded": {
+      "type": "string",
+      "format": "date"
+    },
+    "dateUpdated": {
+      "type": "string",
+      "format": "date"
+    },
+    "stars": {
+      "type": "integer",
+      "minimum": 0,
+      "default": 0
+    },
+    "featured": {
+      "type": "boolean",
+      "default": false
+    }
+  },
+  "additionalProperties": false
+}

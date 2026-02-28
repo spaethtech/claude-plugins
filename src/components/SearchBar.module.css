@@ -1,0 +1,36 @@
+.form {
+  display: flex;
+  gap: 8px;
+  max-width: 600px;
+  width: 100%;
+}
+
+.input {
+  flex: 1;
+  padding: 10px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 1rem;
+  background: var(--bg-card);
+  color: var(--text);
+  outline: none;
+}
+
+.input:focus {
+  border-color: var(--accent);
+}
+
+.button {
+  padding: 10px 20px;
+  background: var(--accent);
+  color: white;
+  border: none;
+  border-radius: var(--radius);
+  font-size: 0.95rem;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.button:hover {
+  background: var(--accent-hover);
+}

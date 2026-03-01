@@ -3,30 +3,31 @@ You are operating in a Claude Code **remote-control session**. You MUST maintain
 There are TWO log files per session — a raw log and a summary:
 
 ```
-.claude/remote/{session}/{date}/{time}.log  ← append-only raw log (crash-safe)
-.claude/remote/{session}/{date}/{time}.md   ← generated on demand or at session end
+.claude/remote/{session}/{timestamp}.log  ← append-only raw log (crash-safe)
+.claude/remote/{session}/{timestamp}.md   ← generated on demand or at session end
 ```
+
+The `{timestamp}` is `YYYYMMDD-HHMM` (e.g. `20260301-1430`). Sorting filenames lexically gives chronological order — the most recent log is always last.
 
 ## Session Initialization
 
 At the **very start** of each remote session (before doing any work):
 
-1. Determine the current date and time (use `date '+%Y-%m-%d'` and `date '+%H%M'`).
+1. Determine the current timestamp: `date '+%Y%m%d-%H%M'`.
 2. Determine the session name from the tmux session: `tmux display-message -p '#{session_name}' 2>/dev/null || echo "unknown"`.
-3. Create the log directory: `mkdir -p .claude/remote/{session}/{date}/`
-4. Create the raw log file: `.claude/remote/{session}/{date}/{time}.log`
+3. Create the log directory: `mkdir -p .claude/remote/{session}/`
+4. Create the raw log file: `.claude/remote/{session}/{timestamp}.log`
 5. Write the initial log header:
 
 ```
 === CLAUDE REMOTE SESSION ===
 session: {session_name}
-started: {date} {time}
+started: {timestamp}
 project: {working directory}
 ===
 ```
 
 6. Ensure `.claude/remote/` is listed in the project's `.gitignore` (append it if missing — do NOT overwrite the file).
-7. Write a pointer file `.claude/remote/{session}/current` containing the path to the active log file.
 
 ## Raw Log Format (.log)
 
@@ -95,8 +96,8 @@ When generating a summary, read the raw log and produce a structured markdown fi
 # Remote Session Summary
 
 - **Session**: {session_name}
-- **Started**: {date} {time}
-- **Ended**: {date} {time}
+- **Started**: {timestamp}
+- **Ended**: {timestamp}
 - **Project**: {working directory}
 
 ## Tasks
@@ -130,5 +131,4 @@ If no errors occurred, omit the Errors section. Same for Decisions if none were 
 - **ALWAYS write to the .log file first, before doing the action.** For commands, log the CMD entry before running it. This ensures if the session crashes during execution, the intent is recorded.
 - **NEVER skip logging.** Every remote session must have a log file.
 - **Write frequently.** The raw log should be a near-real-time record. Don't batch entries.
-- **Update the `current` pointer** at session start so tooling always knows where the active log is.
 - The `.claude/remote/` directory is local-only (gitignored) so you can be candid about errors and decisions.

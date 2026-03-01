@@ -3,8 +3,8 @@ You are operating in a Claude Code **remote-control session**. You MUST maintain
 There are TWO log files per session — a raw log and a summary:
 
 ```
-.claude/remote/{date}/{time}-{session}.log        ← append-only raw log (crash-safe)
-.claude/remote/{date}/{time}-{session}.md         ← generated on demand or at session end
+.claude/remote/{session}/{date}/{time}.log  ← append-only raw log (crash-safe)
+.claude/remote/{session}/{date}/{time}.md   ← generated on demand or at session end
 ```
 
 ## Session Initialization
@@ -13,8 +13,8 @@ At the **very start** of each remote session (before doing any work):
 
 1. Determine the current date and time (use `date '+%Y-%m-%d'` and `date '+%H%M'`).
 2. Determine the session name from the tmux session: `tmux display-message -p '#{session_name}' 2>/dev/null || echo "unknown"`.
-3. Create the log directory: `mkdir -p .claude/remote/{date}/`
-4. Create the raw log file: `.claude/remote/{date}/{time}-{session}.log`
+3. Create the log directory: `mkdir -p .claude/remote/{session}/{date}/`
+4. Create the raw log file: `.claude/remote/{session}/{date}/{time}.log`
 5. Write the initial log header:
 
 ```
@@ -26,7 +26,7 @@ project: {working directory}
 ```
 
 6. Ensure `.claude/remote/` is listed in the project's `.gitignore` (append it if missing — do NOT overwrite the file).
-7. Write a pointer file `.claude/remote/current` containing the path to the active log file (so tooling can find the latest log).
+7. Write a pointer file `.claude/remote/{session}/current` containing the path to the active log file.
 
 ## Raw Log Format (.log)
 
@@ -83,7 +83,7 @@ a1b2c3d — fix: make auth timeout configurable via AUTH_TIMEOUT env var
 Login timeout bug fixed. Timeout now reads from AUTH_TIMEOUT env var (default 30s).
 ```
 
-## Summary File (summary.md)
+## Summary File (.md)
 
 The summary is **NOT written continuously**. It is generated:
 - At session end (graceful shutdown)

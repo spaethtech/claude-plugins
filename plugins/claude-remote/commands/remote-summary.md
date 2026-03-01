@@ -1,12 +1,13 @@
 Generate (or show) a structured summary for a Claude Code remote session.
 
-1. Check if `.claude/remote/current` exists to find the active log path. Otherwise, find the most recent `.log`:
+1. Determine the session name: `tmux display-message -p '#{session_name}' 2>/dev/null` or fall back to finding the most recent session directory under `.claude/remote/`.
+2. Check if `.claude/remote/{session}/current` exists to find the active log path. Otherwise, find the most recent `.log`:
    ```bash
-   find .claude/remote/ -name '*.log' -type f 2>/dev/null | sort -r | head -1
+   find .claude/remote/{session}/ -name '*.log' -type f 2>/dev/null | sort -r | head -1
    ```
-2. Determine the corresponding summary path by replacing `.log` with `.md`.
-3. **If a `.md` already exists** for this session, read and display it.
-4. **If no summary exists yet**, read the raw `.log` and generate a summary in this format:
+3. Determine the corresponding summary path by replacing `.log` with `.md`.
+4. **If a `.md` already exists** for this session, read and display it.
+5. **If no summary exists yet**, read the raw `.log` and generate a summary in this format:
 
 ```markdown
 # Remote Session Summary
@@ -41,7 +42,7 @@ Generate (or show) a structured summary for a Claude Code remote session.
 
 Omit the Errors section if there were none. Same for Decisions.
 
-5. Write the generated summary to the `.md` path.
-6. Display the summary to the user.
+6. Write the generated summary to the `.md` path.
+7. Display the summary to the user.
 
 If no log files exist at all, tell the user no remote sessions have been recorded yet.

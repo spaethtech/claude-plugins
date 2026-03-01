@@ -69,7 +69,7 @@ cmd_start() {
   prompt="$(session_log_prompt)"
   if [[ -n "$prompt" ]]; then
     # Write prompt to a temp file so tmux doesn't mangle quoting
-    local prompt_file="${dir}/.claude/remote/.session-prompt.tmp"
+    local prompt_file="${dir}/.claude/remote/${session}/.session-prompt.tmp"
     mkdir -p "$(dirname "$prompt_file")"
     printf '%s' "$prompt" > "$prompt_file"
     claude_cmd="claude remote-control --continue --append-system-prompt \"\$(cat '${prompt_file}')\""
@@ -274,7 +274,7 @@ cmd_update() {
         local restart_prompt
         restart_prompt="$(session_log_prompt)"
         if [[ -n "$restart_prompt" ]]; then
-          local prompt_file="${dir}/.claude/remote/.session-prompt.tmp"
+          local prompt_file="${dir}/.claude/remote/${session}/.session-prompt.tmp"
           mkdir -p "$(dirname "$prompt_file")"
           printf '%s' "$restart_prompt" > "$prompt_file"
           restart_cmd="claude remote-control --continue --append-system-prompt \"\$(cat '${prompt_file}')\""

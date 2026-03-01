@@ -1,65 +1,134 @@
-You are operating in a Claude Code **remote-control session**. You MUST maintain a session log so the developer can review what happened while unattended.
+You are operating in a Claude Code **remote-control session**. You MUST maintain session logs so the developer can review what happened while unattended.
 
-## Session Log Requirements
+There are TWO log files per session — a raw log and a summary:
 
-At the **very start** of each remote session (before doing any work), do the following:
+```
+.claude/remote/{date}/{time}-{session}.log.txt   ← append-only raw log (crash-safe)
+.claude/remote/{date}/{time}-{session}.summary.md ← generated on demand or at session end
+```
+
+## Session Initialization
+
+At the **very start** of each remote session (before doing any work):
 
 1. Determine the current date and time (use `date '+%Y-%m-%d'` and `date '+%H%M'`).
 2. Determine the session name from the tmux session: `tmux display-message -p '#{session_name}' 2>/dev/null || echo "unknown"`.
-3. Create the log directory if it doesn't exist: `.claude/remote/{date}/` (e.g. `.claude/remote/2026-02-28/`).
-4. Create a new log file: `.claude/remote/{date}/{time}-{session}.md` (e.g. `.claude/remote/2026-02-28/1430-claude-myproject.md`).
-5. Write an initial header to the log:
+3. Create the log directory: `mkdir -p .claude/remote/{date}/`
+4. Create the raw log file: `.claude/remote/{date}/{time}-{session}.log.txt`
+5. Write the initial log header:
 
-```markdown
-# Remote Session Log
-
-- **Session**: {session_name}
-- **Started**: {date} {time}
-- **Project**: {working directory}
-
-## Activity
-
+```
+=== CLAUDE REMOTE SESSION ===
+session: {session_name}
+started: {date} {time}
+project: {working directory}
+===
 ```
 
 6. Ensure `.claude/remote/` is listed in the project's `.gitignore` (append it if missing — do NOT overwrite the file).
+7. Write a pointer file `.claude/remote/current` containing the path to the active log file (so tooling can find the latest log).
 
-## Ongoing Logging
+## Raw Log Format (logs.txt)
 
-As you work through the session, **append** to the log file after each meaningful action:
-
-- Task descriptions (what was requested or what you decided to do)
-- Files modified (paths and brief description of changes)
-- Commands run and their outcomes
-- Errors encountered and how they were resolved
-- Commits created (hash and message)
-- Decisions made and rationale
+The raw log is an **append-only text file**. Write to it **immediately** — before and after every meaningful action. This is your crash-safe record. If the session dies mid-task, whatever was already written survives.
 
 Use this format for each entry:
 
-```markdown
-### {HH:MM} — {brief title}
-
-{description of what was done}
-
-- Modified: `path/to/file` — {what changed}
-- Ran: `command` — {outcome}
+```
+--- {HH:MM:SS} {EVENT_TYPE} ---
+{details}
 ```
 
-## On Session End
+Event types and when to write them:
 
-When the session ends (or when you receive a stop/exit signal), append a summary:
+| Event | When |
+|---|---|
+| `TASK_START` | When you begin working on a task or request |
+| `TASK_DONE` | When a task is completed |
+| `CMD` | Before running a shell command (include the command) |
+| `CMD_RESULT` | After a command completes (include exit code, key output) |
+| `FILE_READ` | When reading a file (include path) |
+| `FILE_WRITE` | When creating/modifying a file (include path, brief description) |
+| `ERROR` | When an error occurs (include error message, context) |
+| `DECISION` | When making a non-obvious choice (include rationale) |
+| `COMMIT` | When creating a git commit (include hash, message) |
+| `NOTE` | Any other relevant observation |
+
+Example log entries:
+
+```
+--- 14:30:05 TASK_START ---
+User requested: fix the login timeout bug in auth.ts
+
+--- 14:30:12 FILE_READ ---
+src/auth.ts
+
+--- 14:30:18 DECISION ---
+The timeout is hardcoded to 5000ms on line 42. Changing to configurable
+via AUTH_TIMEOUT env var with 30000ms default.
+
+--- 14:30:25 FILE_WRITE ---
+src/auth.ts — replaced hardcoded timeout with process.env.AUTH_TIMEOUT
+
+--- 14:30:30 CMD ---
+npm test -- --grep "auth"
+
+--- 14:30:45 CMD_RESULT ---
+exit: 0 — 12 tests passed
+
+--- 14:30:50 COMMIT ---
+a1b2c3d — fix: make auth timeout configurable via AUTH_TIMEOUT env var
+
+--- 14:30:51 TASK_DONE ---
+Login timeout bug fixed. Timeout now reads from AUTH_TIMEOUT env var (default 30s).
+```
+
+## Summary File (summary.md)
+
+The summary is **NOT written continuously**. It is generated:
+- At session end (graceful shutdown)
+- On demand when `/remote-summary` is invoked
+
+When generating a summary, read the raw log and produce a structured markdown file:
 
 ```markdown
-## Summary
+# Remote Session Summary
 
+- **Session**: {session_name}
+- **Started**: {date} {time}
 - **Ended**: {date} {time}
-- **Tasks completed**: {count}
-- **Files modified**: {list}
-- **Commits**: {list of hashes}
+- **Project**: {working directory}
+
+## Tasks
+
+- {task 1 description} — {outcome}
+- {task 2 description} — {outcome}
+
+## Changes
+
+| File | Action | Description |
+|------|--------|-------------|
+| `path/to/file` | modified | {what changed} |
+
+## Commits
+
+- `{hash}` — {message}
+
+## Errors
+
+- {error description} — {resolution}
+
+## Decisions
+
+- {decision} — {rationale}
 ```
 
-## Important
+If no errors occurred, omit the Errors section. Same for Decisions if none were noteworthy.
 
-- NEVER skip logging. Every remote session must have a log file.
-- Keep log entries concise but informative — another developer should understand what happened by reading the log alone.
+## Important Rules
+
+- **ALWAYS write to logs.txt first, before doing the action.** For commands, log the CMD entry before running it. This ensures if the session crashes during execution, the intent is recorded.
+- **NEVER skip logging.** Every remote session must have a log file.
+- **Write frequently.** The raw log should be a near-real-time record. Don't batch entries.
+- **Update the `current` pointer** at session start so tooling always knows where the active log is.
 - The `.claude/remote/` directory is local-only (gitignored) so you can be candid about errors and decisions.

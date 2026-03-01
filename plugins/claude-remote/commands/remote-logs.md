@@ -1,12 +1,11 @@
-Show recent Claude Code remote session logs for the current project.
+Show the raw session log for the most recent (or currently active) Claude Code remote session.
 
-1. List the contents of `.claude/remote/` to find session log directories (sorted by date, most recent first).
-2. If there are logs, read the most recent day's log files and present a summary to the user.
-3. If no logs exist yet, tell the user that no remote session logs have been recorded and that logs are created automatically when sessions start via `claude-remote start`.
+1. Check if `.claude/remote/current` exists — if so, read it to get the active log path.
+2. Otherwise, find the most recent `.log.txt` file under `.claude/remote/`:
+   ```bash
+   find .claude/remote/ -name '*.log.txt' -type f 2>/dev/null | sort -r | head -1
+   ```
+3. If a log file is found, read it and display it to the user.
+4. If no logs exist, tell the user that no remote session logs have been recorded yet and that logs are created automatically when sessions start via `claude-remote start`.
 
-Use bash commands like:
-```bash
-ls -1t .claude/remote/ 2>/dev/null
-```
-
-Then read the latest logs and summarize them concisely.
+The raw log is an append-only text file with timestamped entries. Present it as-is — this is the unprocessed record. If the user wants a structured summary, suggest they use `/remote-summary` instead.

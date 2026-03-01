@@ -4,7 +4,7 @@ There are TWO log files per session — a raw log and a summary:
 
 ```
 .claude/remote/{date}/{time}-{session}.log        ← append-only raw log (crash-safe)
-.claude/remote/{date}/{time}-{session}.summary.md ← generated on demand or at session end
+.claude/remote/{date}/{time}-{session}.md         ← generated on demand or at session end
 ```
 
 ## Session Initialization

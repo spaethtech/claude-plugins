@@ -4,8 +4,8 @@ Generate (or show) a structured summary for a Claude Code remote session.
    ```bash
    find .claude/remote/ -name '*.log' -type f 2>/dev/null | sort -r | head -1
    ```
-2. Determine the corresponding summary path by replacing `.log` with `.summary.md`.
-3. **If a `.summary.md` already exists** for this session, read and display it.
+2. Determine the corresponding summary path by replacing `.log` with `.md`.
+3. **If a `.md` already exists** for this session, read and display it.
 4. **If no summary exists yet**, read the raw `.log` and generate a summary in this format:
 
 ```markdown
@@ -41,7 +41,7 @@ Generate (or show) a structured summary for a Claude Code remote session.
 
 Omit the Errors section if there were none. Same for Decisions.
 
-5. Write the generated summary to the `.summary.md` path.
+5. Write the generated summary to the `.md` path.
 6. Display the summary to the user.
 
 If no log files exist at all, tell the user no remote sessions have been recorded yet.

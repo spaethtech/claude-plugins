@@ -3,7 +3,7 @@ You are operating in a Claude Code **remote-control session**. You MUST maintain
 There are TWO log files per session — a raw log and a summary:
 
 ```
-.claude/remote/{date}/{time}-{session}.log.txt   ← append-only raw log (crash-safe)
+.claude/remote/{date}/{time}-{session}.log        ← append-only raw log (crash-safe)
 .claude/remote/{date}/{time}-{session}.summary.md ← generated on demand or at session end
 ```
 
@@ -14,7 +14,7 @@ At the **very start** of each remote session (before doing any work):
 1. Determine the current date and time (use `date '+%Y-%m-%d'` and `date '+%H%M'`).
 2. Determine the session name from the tmux session: `tmux display-message -p '#{session_name}' 2>/dev/null || echo "unknown"`.
 3. Create the log directory: `mkdir -p .claude/remote/{date}/`
-4. Create the raw log file: `.claude/remote/{date}/{time}-{session}.log.txt`
+4. Create the raw log file: `.claude/remote/{date}/{time}-{session}.log`
 5. Write the initial log header:
 
 ```
@@ -28,7 +28,7 @@ project: {working directory}
 6. Ensure `.claude/remote/` is listed in the project's `.gitignore` (append it if missing — do NOT overwrite the file).
 7. Write a pointer file `.claude/remote/current` containing the path to the active log file (so tooling can find the latest log).
 
-## Raw Log Format (logs.txt)
+## Raw Log Format (.log)
 
 The raw log is an **append-only text file**. Write to it **immediately** — before and after every meaningful action. This is your crash-safe record. If the session dies mid-task, whatever was already written survives.
 
@@ -127,7 +127,7 @@ If no errors occurred, omit the Errors section. Same for Decisions if none were 
 
 ## Important Rules
 
-- **ALWAYS write to logs.txt first, before doing the action.** For commands, log the CMD entry before running it. This ensures if the session crashes during execution, the intent is recorded.
+- **ALWAYS write to the .log file first, before doing the action.** For commands, log the CMD entry before running it. This ensures if the session crashes during execution, the intent is recorded.
 - **NEVER skip logging.** Every remote session must have a log file.
 - **Write frequently.** The raw log should be a near-real-time record. Don't batch entries.
 - **Update the `current` pointer** at session start so tooling always knows where the active log is.

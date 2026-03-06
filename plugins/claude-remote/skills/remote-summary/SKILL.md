@@ -1,3 +1,10 @@
+---
+name: remote-summary
+description: Generate or show a structured summary for a Claude Code remote session
+disable-model-invocation: true
+allowed-tools: Bash, Read, Write, Glob
+---
+
 Generate (or show) a structured summary for a Claude Code remote session.
 
 1. Determine the session name: `tmux display-message -p '#{session_name}' 2>/dev/null` or fall back to finding the most recent session directory under `.claude/remote/`.

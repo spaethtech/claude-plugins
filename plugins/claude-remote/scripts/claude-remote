@@ -182,7 +182,7 @@ plugin_dir() {
 # Load the remote-session-log skill as system prompt context
 session_log_prompt() {
   local skill_file
-  skill_file="$(plugin_dir)/skills/remote-session-log.md"
+  skill_file="$(plugin_dir)/skills/remote-session-log/SKILL.md"
   if [[ -f "$skill_file" ]]; then
     cat "$skill_file"
   fi

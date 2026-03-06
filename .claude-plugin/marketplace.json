@@ -5,19 +5,32 @@
   },
   "metadata": {
     "description": "SpaethTech Claude Code Plugins Marketplace",
-    "version": "1.0.0"
+    "version": "1.1.0",
+    "pluginRoot": "./plugins"
   },
   "plugins": [
     {
       "name": "claude-remote",
       "source": "./plugins/claude-remote",
       "description": "Manage per-project Claude Code remote-control sessions via tmux",
-      "version": "1.0.0",
+      "version": "1.1.0",
       "author": {
         "name": "SpaethTech"
       },
       "license": "MIT",
       "keywords": ["remote-control", "tmux", "session", "daemon", "service"],
+      "category": "toolkit"
+    },
+    {
+      "name": "session-cleanup",
+      "source": "./plugins/session-cleanup",
+      "description": "Kill duplicate Claude CLI/tmux sessions at startup for low-memory machines",
+      "version": "1.0.0",
+      "author": {
+        "name": "SpaethTech"
+      },
+      "license": "MIT",
+      "keywords": ["cleanup", "session", "memory", "process", "low-memory"],
       "category": "toolkit"
     }
   ]

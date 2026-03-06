@@ -1,10 +1,17 @@
+---
+name: remote-session-log
+description: Session logging behavior for Claude Code remote-control sessions. Activates automatically when operating in a remote-control session.
+user-invocable: false
+allowed-tools: Bash, Read, Write, Glob
+---
+
 You are operating in a Claude Code **remote-control session**. You MUST maintain session logs so the developer can review what happened while unattended.
 
 There are TWO log files per session — a raw log and a summary:
 
 ```
-.claude/remote/{session}/{timestamp}.log  ← append-only raw log (crash-safe)
-.claude/remote/{session}/{timestamp}.md   ← generated on demand or at session end
+.claude/remote/{session}/{timestamp}.log  <- append-only raw log (crash-safe)
+.claude/remote/{session}/{timestamp}.md   <- generated on demand or at session end
 ```
 
 The `{timestamp}` is `YYYYMMDD-HHMM` (e.g. `20260301-1430`). Sorting filenames lexically gives chronological order — the most recent log is always last.

@@ -1,0 +1,10 @@
+{
+  "name": "session-cleanup",
+  "version": "1.0.0",
+  "description": "Kill duplicate Claude CLI/tmux sessions at startup to keep processes clean on low-memory machines. Spares VS Code extension processes.",
+  "author": {
+    "name": "SpaethTech"
+  },
+  "keywords": ["cleanup", "session", "memory", "process", "low-memory"],
+  "license": "MIT"
+}

@@ -1,3 +1,10 @@
+---
+name: remote-logs
+description: Show the raw session log for the most recent or currently active Claude Code remote session
+disable-model-invocation: true
+allowed-tools: Bash, Read, Glob
+---
+
 Show the raw session log for the most recent (or currently active) Claude Code remote session.
 
 1. Determine the session name: `tmux display-message -p '#{session_name}' 2>/dev/null` or fall back to finding the most recent session directory under `.claude/remote/`.

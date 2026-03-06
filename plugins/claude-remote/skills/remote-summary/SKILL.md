@@ -14,7 +14,7 @@ Generate (or show) a structured summary for a Claude Code remote session.
    ```
 3. Determine the corresponding summary path by replacing `.log` with `.md`.
 4. **If a `.md` already exists** for this log, read and display it.
-5. **If no summary exists yet**, read the raw `.log` and generate a summary in this format:
+5. **If no summary exists yet**, read the raw `.log` (terminal capture with ANSI codes — parse through them) and generate a summary in this format:
 
 ```markdown
 # Remote Session Summary

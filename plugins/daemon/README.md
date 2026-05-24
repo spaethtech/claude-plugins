@@ -1,10 +1,29 @@
 # Claude Daemon
 
-A global watcher that runs Claude Code as persistent sessions for any project that has a `.claude/daemon.json` file.
+A Claude Code plugin that runs persistent Claude sessions as a systemd service. Drop a `.claude/daemon.json` in any project — the watcher picks it up and starts a session. Remove it — the session stops.
+
+## Install
+
+Install from the `spaethtech-plugins` marketplace via `/plugin` in Claude Code. The watcher service is set up automatically on the next session start.
+
+To prompt collaborators to install, add this to your project's `.claude/settings.json`:
+
+```json
+{
+  "extraKnownMarketplaces": {
+    "spaethtech-plugins": {
+      "source": {
+        "source": "github",
+        "repo": "spaethtech/claude-plugins"
+      }
+    }
+  }
+}
+```
 
 ## How It Works
 
-One systemd service (`claude-daemon`) scans `~/` for projects containing `.claude/daemon.json`. For each one found, it starts a Claude Code session inside a tmux window. Remove the file, the session stops. Edit the file, the session restarts.
+One systemd service (`claude-daemon`) scans `~/` for projects containing `.claude/daemon.json`. For each one found, it starts a Claude Code session inside a tmux window.
 
 ```
 systemd (claude-daemon.service)
@@ -22,13 +41,7 @@ systemd (claude-daemon.service)
 | tmux session | `claude-<dirname>` |
 | Settings | `.claude/daemon.json` merged on top of `.claude/settings.json` |
 
-## Quick Start
-
-**Install the watcher (one time):**
-
-```bash
-./install.sh
-```
+## Usage
 
 **Add a project:**
 
@@ -69,24 +82,17 @@ An empty `{}` file is valid — it starts a daemon with the project's standard s
 
 The watcher checks `daemon.json` modification times every 10 seconds. Edit the file and the session restarts automatically.
 
+## Plugin Lifecycle
+
+A `SessionStart` hook runs `setup.sh` on every Claude session. It compares the plugin version against a cached value in `${CLAUDE_PLUGIN_DATA}` — on first install or after an update, it runs `install.sh` to create or update the systemd watcher service. Subsequent sessions are a no-op.
+
+With auto-update enabled, marketplace updates are pulled automatically. The watcher service is updated on the next Claude session start.
+
 ## Prerequisites
 
 - `tmux` (3.x+)
 - `claude` CLI on PATH
-- systemd with user service support
-
-## Install
-
-```bash
-CLAUDE_PLUGIN_ROOT=/path/to/this/plugin ./install.sh
-```
-
-When installed as a Claude Code plugin, `CLAUDE_PLUGIN_ROOT` is set automatically.
-
-This will:
-- Generate `claude-daemon.service` into `~/.config/systemd/user/`
-- Enable lingering (so the service survives logout)
-- Enable and start the watcher
+- systemd with user service support (Linux)
 
 ## Commands
 

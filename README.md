@@ -26,8 +26,11 @@ See [plugins/daemon/README.md](plugins/daemon/README.md) for full documentation.
 ## Usage
 
 ```bash
-# Add the marketplace (one time, user level)
+# Add the marketplace (one time)
 claude plugin marketplace add spaethtech/claude-plugins --scope user
+
+# Install a plugin (user level — available in all projects)
+claude plugin install daemon@spaethtech-plugins --scope user
 
 # Update marketplace to latest
 claude plugin marketplace update spaethtech-plugins

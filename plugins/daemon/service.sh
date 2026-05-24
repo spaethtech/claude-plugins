@@ -70,6 +70,18 @@ while true; do
   while IFS= read -r project_dir; do
     [[ -z "$project_dir" ]] && continue
     [[ ! -d "$project_dir" ]] && continue
+
+    # Skip if plugin is disabled at project level
+    local settings="$project_dir/.claude/settings.json"
+    if [[ -f "$settings" ]] && grep -q '"daemon@spaethtech-plugins"[[:space:]]*:[[:space:]]*false' "$settings"; then
+      # Stop session if it was running
+      if [[ -n "${MTIMES[$project_dir]:-}" ]]; then
+        echo "Plugin disabled: $project_dir"
+        stop_session "$project_dir"
+      fi
+      continue
+    fi
+
     ACTIVE["$project_dir"]=1
     project_name="$(basename "$project_dir")"
     session="claude-${project_name}"

@@ -18,8 +18,17 @@ log() { $QUIET || echo "$@"; }
 
 # Prerequisites
 if ! command -v tmux &>/dev/null; then
-  log "ERROR: tmux is required but not installed."
-  exit 1
+  log "Installing tmux..."
+  if command -v apt-get &>/dev/null; then
+    sudo -n apt-get install -y -qq tmux 2>/dev/null || { log "ERROR: Failed to install tmux. Run: sudo apt-get install tmux"; exit 1; }
+  elif command -v yum &>/dev/null; then
+    sudo -n yum install -y -q tmux 2>/dev/null || { log "ERROR: Failed to install tmux. Run: sudo yum install tmux"; exit 1; }
+  elif command -v brew &>/dev/null; then
+    brew install tmux 2>/dev/null || { log "ERROR: Failed to install tmux. Run: brew install tmux"; exit 1; }
+  else
+    log "ERROR: tmux is required. Install it manually."
+    exit 1
+  fi
 fi
 if ! command -v claude &>/dev/null; then
   log "ERROR: claude is not on PATH."

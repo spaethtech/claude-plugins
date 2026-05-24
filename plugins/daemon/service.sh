@@ -103,13 +103,11 @@ while true; do
       if [[ "$latest" != "$current" ]]; then
         echo "Plugin updated: $current → $latest"
         new_plugin_dir="$cache_parent/$latest"
-        cp "$new_plugin_dir/service.sh" "$DAEMON_HOME/service.sh"
-        chmod +x "$DAEMON_HOME/service.sh"
-        echo "$new_plugin_dir" > "$PLUGIN_DIR_FILE"
-        echo "$latest" > "$DAEMON_HOME/.version"
         stop_all
-        echo "Restarting watcher with updated service.sh..."
-        exec "$DAEMON_HOME/service.sh"
+        # Run the new version's install.sh (regenerates service file + copies scripts)
+        CLAUDE_PLUGIN_ROOT="$new_plugin_dir" bash "$new_plugin_dir/install.sh" --quiet
+        echo "Watcher updated and restarted."
+        exit 0
       fi
     fi
   fi

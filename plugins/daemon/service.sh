@@ -1,10 +1,11 @@
 #!/bin/bash -l
 set -euo pipefail
 
-DAEMON_HOME="${DAEMON_HOME:?DAEMON_HOME not set}"
-PROJECTS_FILE="$DAEMON_HOME/projects"
-PLUGIN_DIR_FILE="$DAEMON_HOME/.plugin-dir"
+PLUGIN_DIR="${DAEMON_PLUGIN_DIR:?DAEMON_PLUGIN_DIR not set}"
+DATA_DIR="${DAEMON_DATA_DIR:?DAEMON_DATA_DIR not set}"
+PROJECTS_FILE="$DATA_DIR/projects"
 SERVICE_NAME="claude-daemon"
+PLUGIN_KEY="daemon@spaethtech-plugins"
 POLL_INTERVAL=10
 
 declare -A MTIMES
@@ -58,28 +59,58 @@ stop_all() {
   done
 }
 
+# Full teardown: stop sessions, remove systemd service
+# If clean=true, also remove cache
 teardown() {
+  local clean="${1:-false}"
   echo "Tearing down daemon service..."
   stop_all
   systemctl --user disable "$SERVICE_NAME" 2>/dev/null || true
   rm -f "$HOME/.config/systemd/user/${SERVICE_NAME}.service"
   systemctl --user daemon-reload 2>/dev/null || true
-  rm -rf "$DAEMON_HOME"
+  if [[ "$clean" == "true" ]]; then
+    cache_parent="$(dirname "$PLUGIN_DIR")"
+    if [[ -d "$cache_parent" ]]; then
+      rm -rf "$cache_parent"
+      echo "Cache removed: $cache_parent"
+    fi
+  fi
   echo "Daemon service removed."
   exit 0
 }
 
 trap stop_all EXIT TERM INT
 
+# Check if plugin key exists (not value, just presence) in any settings file for a project
+plugin_installed_in() {
+  local project_dir="$1"
+  local settings="$project_dir/.claude/settings.json"
+  local settings_local="$project_dir/.claude/settings.local.json"
+
+  if [[ -f "$settings" ]] && grep -q "\"$PLUGIN_KEY\"" "$settings"; then
+    return 0
+  fi
+  if [[ -f "$settings_local" ]] && grep -q "\"$PLUGIN_KEY\"" "$settings_local"; then
+    return 0
+  fi
+  # User-level settings
+  if [[ -f "$HOME/.claude/settings.json" ]] && grep -q "\"$PLUGIN_KEY\"" "$HOME/.claude/settings.json"; then
+    return 0
+  fi
+
+  return 1
+}
+
+# Check if plugin is explicitly disabled (value is false)
 is_plugin_enabled() {
   local project_dir="$1"
   local settings="$project_dir/.claude/settings.json"
   local settings_local="$project_dir/.claude/settings.local.json"
 
-  if [[ -f "$settings" ]] && grep -q '"daemon@spaethtech-plugins"[[:space:]]*:[[:space:]]*false' "$settings"; then
+  if [[ -f "$settings" ]] && grep -q "\"$PLUGIN_KEY\"[[:space:]]*:[[:space:]]*false" "$settings"; then
     return 1
   fi
-  if [[ -f "$settings_local" ]] && grep -q '"daemon@spaethtech-plugins"[[:space:]]*:[[:space:]]*false' "$settings_local"; then
+  if [[ -f "$settings_local" ]] && grep -q "\"$PLUGIN_KEY\"[[:space:]]*:[[:space:]]*false" "$settings_local"; then
     return 1
   fi
 
@@ -87,37 +118,55 @@ is_plugin_enabled() {
 }
 
 while true; do
-  # Check if plugin was globally removed (cache directory gone)
-  if [[ -f "$PLUGIN_DIR_FILE" ]]; then
-    plugin_dir="$(cat "$PLUGIN_DIR_FILE")"
-    if [[ ! -d "$plugin_dir" ]]; then
-      echo "Plugin removed from cache: $plugin_dir"
-      teardown
-    fi
+  # Data dir deleted → user chose full removal → clean teardown
+  if [[ ! -d "$DATA_DIR" ]]; then
+    teardown true
+  fi
 
-    # Check for plugin update (newer version in cache)
-    cache_parent="$(dirname "$plugin_dir")"
-    if [[ -d "$cache_parent" ]]; then
-      latest="$(ls -1 "$cache_parent" | sort -V | tail -1)"
-      current="$(basename "$plugin_dir")"
-      if [[ "$latest" != "$current" ]]; then
-        echo "Plugin updated: $current → $latest"
-        new_plugin_dir="$cache_parent/$latest"
-        stop_all
-        # Run the new version's install.sh (regenerates service file + copies scripts)
-        CLAUDE_PLUGIN_ROOT="$new_plugin_dir" bash "$new_plugin_dir/install.sh" --quiet
-        echo "Watcher updated and restarted."
-        exit 0
-      fi
+  # Cache gone (7-day cleanup) → teardown (nothing to clean)
+  if [[ ! -d "$PLUGIN_DIR" ]]; then
+    teardown false
+  fi
+
+  # Check for plugin update (newer version in cache)
+  cache_parent="$(dirname "$PLUGIN_DIR")"
+  if [[ -d "$cache_parent" ]]; then
+    latest="$(ls -1 "$cache_parent" | sort -V | tail -1)"
+    current="$(basename "$PLUGIN_DIR")"
+    if [[ "$latest" != "$current" ]]; then
+      echo "Plugin updated: $current → $latest"
+      new_plugin_dir="$cache_parent/$latest"
+      stop_all
+      CLAUDE_PLUGIN_ROOT="$new_plugin_dir" CLAUDE_PLUGIN_DATA="$DATA_DIR" \
+        bash "$new_plugin_dir/install.sh" --quiet
+      echo "Watcher updated and restarted."
+      exit 0
     fi
   fi
 
-  # Read registered projects
+  # No projects file yet — wait
   if [[ ! -f "$PROJECTS_FILE" ]]; then
     sleep "$POLL_INTERVAL"
     continue
   fi
 
+  # Check if plugin was uninstalled from ALL projects (entry removed entirely)
+  all_uninstalled=true
+  while IFS= read -r project_dir; do
+    [[ -z "$project_dir" ]] && continue
+    [[ ! -d "$project_dir" ]] && continue
+    if plugin_installed_in "$project_dir"; then
+      all_uninstalled=false
+      break
+    fi
+  done < "$PROJECTS_FILE"
+
+  if $all_uninstalled; then
+    echo "Plugin uninstalled from all projects"
+    teardown false
+  fi
+
+  # Process each registered project
   declare -A ACTIVE
   active_count=0
 

@@ -1,36 +1,16 @@
 {
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "spaethtech-plugins",
+  "description": "SpaethTech Claude Code Plugins",
   "owner": {
-    "name": "SpaethTech"
-  },
-  "metadata": {
-    "description": "SpaethTech Claude Code Plugins Marketplace",
-    "version": "1.1.0",
-    "pluginRoot": "./plugins"
+    "name": "SpaethTech",
+    "email": "rspaeth@spaethtech.com"
   },
   "plugins": [
     {
-      "name": "claude-remote",
-      "source": "./plugins/claude-remote",
-      "description": "Manage per-project Claude Code remote-control sessions via tmux",
-      "version": "1.1.0",
-      "author": {
-        "name": "SpaethTech"
-      },
-      "license": "MIT",
-      "keywords": ["remote-control", "tmux", "session", "daemon", "service"],
-      "category": "toolkit"
-    },
-    {
-      "name": "session-cleanup",
-      "source": "./plugins/session-cleanup",
-      "description": "Kill duplicate Claude CLI/tmux sessions at startup for low-memory machines",
-      "version": "1.0.0",
-      "author": {
-        "name": "SpaethTech"
-      },
-      "license": "MIT",
-      "keywords": ["cleanup", "session", "memory", "process", "low-memory"],
+      "name": "daemon",
+      "source": "./plugins/daemon",
+      "description": "Run Claude Code as a persistent systemd user service via tmux",
       "category": "toolkit"
     }
   ]

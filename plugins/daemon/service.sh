@@ -2,9 +2,9 @@
 set -euo pipefail
 
 PLUGIN_DIR="${DAEMON_PLUGIN_DIR:?DAEMON_PLUGIN_DIR not set}"
-SCAN_ROOT="$HOME"
-SCAN_DEPTH=4
-SCAN_INTERVAL=10
+DATA_DIR="${DAEMON_DATA_DIR:?DAEMON_DATA_DIR not set}"
+PROJECTS_FILE="$DATA_DIR/projects"
+POLL_INTERVAL=10
 
 declare -A MTIMES
 
@@ -27,12 +27,18 @@ start_session() {
     session_flag="--session-id $session_id"
   fi
 
-  local settings_flag="--settings $daemon_json"
+  # Use daemon.json for settings overrides if it exists
+  local settings_flag=""
+  if [[ -f "$daemon_json" ]]; then
+    settings_flag="--settings $daemon_json"
+    MTIMES["$project_dir"]="$(stat -c %Y "$daemon_json")"
+  else
+    MTIMES["$project_dir"]="none"
+  fi
 
   tmux new-session -d -s "$session" -c "$project_dir" \
     "bash -lc 'exec claude $session_flag -n $project_name $settings_flag'"
 
-  MTIMES["$project_dir"]="$(stat -c %Y "$daemon_json")"
   echo "Started session: $session ($project_dir)"
 }
 
@@ -54,42 +60,45 @@ cleanup() {
 trap cleanup EXIT TERM INT
 
 while true; do
-  # Find all projects with daemon.json
-  mapfile -t FOUND < <(find "$SCAN_ROOT" -maxdepth "$SCAN_DEPTH" \
-    -name daemon.json -path '*/.claude/daemon.json' \
-    -not -path '*/node_modules/*' -not -path '*/.git/*' 2>/dev/null)
+  # Read registered projects
+  if [[ ! -f "$PROJECTS_FILE" ]]; then
+    sleep "$POLL_INTERVAL"
+    continue
+  fi
 
-  # Build set of active project dirs
   declare -A ACTIVE
-  for daemon_json in "${FOUND[@]}"; do
-    [[ -z "$daemon_json" ]] && continue
-    project_dir="$(cd "$(dirname "$daemon_json")/.." && pwd)"
+  while IFS= read -r project_dir; do
+    [[ -z "$project_dir" ]] && continue
+    [[ ! -d "$project_dir" ]] && continue
     ACTIVE["$project_dir"]=1
     project_name="$(basename "$project_dir")"
     session="claude-${project_name}"
 
     if ! tmux has-session -t "$session" 2>/dev/null; then
-      # New project or crashed session — start it
       start_session "$project_dir"
     else
-      # Check for daemon.json changes
-      current_mtime="$(stat -c %Y "$daemon_json" 2>/dev/null || echo 0)"
+      # Check for daemon.json changes (added, modified, or removed)
+      local daemon_json="$project_dir/.claude/daemon.json"
+      local current_mtime="none"
+      if [[ -f "$daemon_json" ]]; then
+        current_mtime="$(stat -c %Y "$daemon_json")"
+      fi
       if [[ "${MTIMES[$project_dir]:-}" != "$current_mtime" ]]; then
         echo "daemon.json changed: $project_dir"
         stop_session "$project_dir"
         start_session "$project_dir"
       fi
     fi
-  done
+  done < "$PROJECTS_FILE"
 
-  # Stop sessions for removed daemon.json files
+  # Stop sessions for unregistered projects
   for project_dir in "${!MTIMES[@]}"; do
     if [[ -z "${ACTIVE[$project_dir]:-}" ]]; then
-      echo "daemon.json removed: $project_dir"
+      echo "Project unregistered: $project_dir"
       stop_session "$project_dir"
     fi
   done
 
   unset ACTIVE
-  sleep "$SCAN_INTERVAL"
+  sleep "$POLL_INTERVAL"
 done

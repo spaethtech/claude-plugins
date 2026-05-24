@@ -16,12 +16,6 @@ done
 
 log() { $QUIET || echo "$@"; }
 
-# Already installed and running — nothing to do
-if [[ -f "$SERVICE_FILE" ]] && systemctl --user is-active "$SERVICE_NAME" &>/dev/null; then
-  log "Service $SERVICE_NAME is already installed and running."
-  exit 0
-fi
-
 # Prerequisites
 if ! command -v tmux &>/dev/null; then
   log "ERROR: tmux is required but not installed."
@@ -32,15 +26,16 @@ if ! command -v claude &>/dev/null; then
   exit 1
 fi
 
-log "=== Claude Daemon - Install ==="
-log "  Plugin: $PLUGIN_DIR"
-log "  Data:   $DATA_DIR"
-log "  Service: $SERVICE_NAME"
-log ""
-
-chmod +x "$PLUGIN_DIR/service.sh"
 mkdir -p "$SYSTEMD_USER_DIR" "$DATA_DIR"
 
+# Copy service.sh to durable location (survives plugin cache cleanup)
+cp "$PLUGIN_DIR/service.sh" "$DATA_DIR/service.sh"
+chmod +x "$DATA_DIR/service.sh"
+
+# Store the cache base path so the watcher can detect plugin removal
+echo "$PLUGIN_DIR" > "$DATA_DIR/.plugin-dir"
+
+# Regenerate the service file (always, to pick up new paths on update)
 cat > "$SERVICE_FILE" <<EOF
 [Unit]
 Description=Claude Code Daemon Watcher
@@ -49,9 +44,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-Environment=DAEMON_PLUGIN_DIR=${PLUGIN_DIR}
 Environment=DAEMON_DATA_DIR=${DATA_DIR}
-ExecStart=${PLUGIN_DIR}/service.sh
+ExecStart=${DATA_DIR}/service.sh
 Restart=always
 RestartSec=10
 TimeoutStopSec=30
@@ -73,5 +67,5 @@ fi
 
 systemctl --user daemon-reload
 systemctl --user enable "$SERVICE_NAME"
-systemctl --user start "$SERVICE_NAME"
+systemctl --user restart "$SERVICE_NAME"
 log "Service started."

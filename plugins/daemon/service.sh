@@ -1,9 +1,10 @@
 #!/bin/bash -l
 set -euo pipefail
 
-PLUGIN_DIR="${DAEMON_PLUGIN_DIR:?DAEMON_PLUGIN_DIR not set}"
 DATA_DIR="${DAEMON_DATA_DIR:?DAEMON_DATA_DIR not set}"
 PROJECTS_FILE="$DATA_DIR/projects"
+PLUGIN_DIR_FILE="$DATA_DIR/.plugin-dir"
+SERVICE_NAME="claude-daemon"
 POLL_INTERVAL=10
 
 declare -A MTIMES
@@ -27,7 +28,6 @@ start_session() {
     session_flag="--session-id $session_id"
   fi
 
-  # Use daemon.json for settings overrides if it exists
   local settings_flag=""
   if [[ -f "$daemon_json" ]]; then
     settings_flag="--settings $daemon_json"
@@ -52,14 +52,51 @@ stop_session() {
   echo "Stopped session: $session"
 }
 
-cleanup() {
+stop_all() {
   for project_dir in "${!MTIMES[@]}"; do
     stop_session "$project_dir"
   done
 }
-trap cleanup EXIT TERM INT
+
+teardown() {
+  echo "Tearing down daemon service..."
+  stop_all
+  systemctl --user disable "$SERVICE_NAME" 2>/dev/null || true
+  rm -f "$HOME/.config/systemd/user/${SERVICE_NAME}.service"
+  systemctl --user daemon-reload 2>/dev/null || true
+  rm -rf "$DATA_DIR"
+  echo "Daemon service removed."
+  exit 0
+}
+
+trap stop_all EXIT TERM INT
+
+is_plugin_enabled() {
+  local project_dir="$1"
+  local settings="$project_dir/.claude/settings.json"
+  local settings_local="$project_dir/.claude/settings.local.json"
+
+  # Explicitly disabled at project level
+  if [[ -f "$settings" ]] && grep -q '"daemon@spaethtech-plugins"[[:space:]]*:[[:space:]]*false' "$settings"; then
+    return 1
+  fi
+  if [[ -f "$settings_local" ]] && grep -q '"daemon@spaethtech-plugins"[[:space:]]*:[[:space:]]*false' "$settings_local"; then
+    return 1
+  fi
+
+  return 0
+}
 
 while true; do
+  # Check if plugin was globally removed (cache directory gone)
+  if [[ -f "$PLUGIN_DIR_FILE" ]]; then
+    plugin_dir="$(cat "$PLUGIN_DIR_FILE")"
+    if [[ ! -d "$plugin_dir" ]]; then
+      echo "Plugin removed from cache: $plugin_dir"
+      teardown
+    fi
+  fi
+
   # Read registered projects
   if [[ ! -f "$PROJECTS_FILE" ]]; then
     sleep "$POLL_INTERVAL"
@@ -67,14 +104,13 @@ while true; do
   fi
 
   declare -A ACTIVE
+  active_count=0
+
   while IFS= read -r project_dir; do
     [[ -z "$project_dir" ]] && continue
     [[ ! -d "$project_dir" ]] && continue
 
-    # Skip if plugin is disabled at project level
-    settings="$project_dir/.claude/settings.json"
-    if [[ -f "$settings" ]] && grep -q '"daemon@spaethtech-plugins"[[:space:]]*:[[:space:]]*false' "$settings"; then
-      # Stop session if it was running
+    if ! is_plugin_enabled "$project_dir"; then
       if [[ -n "${MTIMES[$project_dir]:-}" ]]; then
         echo "Plugin disabled: $project_dir"
         stop_session "$project_dir"
@@ -83,13 +119,13 @@ while true; do
     fi
 
     ACTIVE["$project_dir"]=1
+    active_count=$((active_count + 1))
     project_name="$(basename "$project_dir")"
     session="claude-${project_name}"
 
     if ! tmux has-session -t "$session" 2>/dev/null; then
       start_session "$project_dir"
     else
-      # Check for daemon.json changes (added, modified, or removed)
       daemon_json="$project_dir/.claude/daemon.json"
       current_mtime="none"
       if [[ -f "$daemon_json" ]]; then

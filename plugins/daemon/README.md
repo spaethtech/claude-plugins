@@ -1,6 +1,6 @@
 # Claude Daemon
 
-A Claude Code plugin that runs persistent Claude sessions as a systemd service. Drop a `.claude/daemon.json` in any project — the watcher picks it up and starts a session. Remove it — the session stops.
+A Claude Code plugin that runs persistent Claude sessions as a systemd service. Install the plugin in any project, and the watcher automatically starts a daemon session for it.
 
 ## Install
 
@@ -23,15 +23,15 @@ To prompt collaborators to install, add this to your project's `.claude/settings
 
 ## How It Works
 
-One systemd service (`claude-daemon`) scans `~/` for projects containing `.claude/daemon.json`. For each one found, it starts a Claude Code session inside a tmux window.
+A `SessionStart` hook registers each project with a global watcher service. The watcher manages persistent Claude sessions for all registered projects.
 
 ```
-systemd (claude-daemon.service)
-  └─ service.sh (watcher loop)
-       ├─ scans ~/ for .claude/daemon.json every 10s
-       ├─ starts tmux "claude-<dirname>" for each found
-       ├─ stops sessions when daemon.json is removed
-       └─ restarts sessions when daemon.json is modified
+Plugin installed in project
+  └─ SessionStart hook fires
+       └─ setup.sh registers project in ${CLAUDE_PLUGIN_DATA}/projects
+            └─ claude-daemon.service (watcher)
+                 └─ tmux "claude-<dirname>"
+                      └─ claude --resume <derived-uuid> -n <dirname>
 ```
 
 | Derived value | Source |
@@ -39,52 +39,41 @@ systemd (claude-daemon.service)
 | Claude session name | Directory name |
 | Session ID | Deterministic UUID from project path (sha256) |
 | tmux session | `claude-<dirname>` |
-| Settings | `.claude/daemon.json` merged on top of `.claude/settings.json` |
+| Settings | `.claude/daemon.json` merged on top of `.claude/settings.json` (if present) |
 
 ## Usage
 
-**Add a project:**
+Once the plugin is installed in a project and you've started one Claude session (to trigger the hook), the daemon runs automatically. No other setup needed.
 
-```bash
-echo '{}' > ~/my-project/.claude/daemon.json
-# Session starts within 10 seconds
-```
+### Optional: Settings overrides
 
-**Add a project with settings overrides:**
+Create `.claude/daemon.json` to override settings for the daemon session only — manual CLI sessions are unaffected:
 
-```bash
-cat > ~/my-project/.claude/daemon.json <<'EOF'
+```json
 {
   "remoteControlAtStartup": true,
   "tui": "fullscreen"
 }
-EOF
 ```
 
-**Remove a project:**
-
-```bash
-rm ~/my-project/.claude/daemon.json
-# Session stops within 10 seconds
-```
-
-## Session Persistence
-
-The session ID is a deterministic UUID derived from the project's absolute path. Restarts always resume the same conversation — no state files needed. First run creates the session, subsequent runs resume it.
-
-## Settings
-
-`.claude/daemon.json` is passed via `--settings` and merges on top of the project's `.claude/settings.json`. Only the daemon session gets these overrides — manual CLI sessions are unaffected.
-
-An empty `{}` file is valid — it starts a daemon with the project's standard settings.
+This file is optional. Without it, the daemon uses the project's standard `.claude/settings.json`.
 
 ### Live Reload
 
 The watcher checks `daemon.json` modification times every 10 seconds. Edit the file and the session restarts automatically.
 
+## Session Persistence
+
+The session ID is a deterministic UUID derived from the project's absolute path. Restarts always resume the same conversation — no state files needed. First run creates the session, subsequent runs resume it.
+
 ## Plugin Lifecycle
 
-A `SessionStart` hook runs `setup.sh` on every Claude session. It compares the plugin version against a cached value in `${CLAUDE_PLUGIN_DATA}` — on first install or after an update, it runs `install.sh` to create or update the systemd watcher service. Subsequent sessions are a no-op.
+A `SessionStart` hook runs `setup.sh` on every Claude session. It:
+
+1. Compares the plugin version against a cached value in `${CLAUDE_PLUGIN_DATA}` — on first install or after an update, runs `install.sh` to create or update the systemd watcher service
+2. Registers the current project in `${CLAUDE_PLUGIN_DATA}/projects`
+
+Subsequent sessions are a no-op for step 1; step 2 is a dedup check.
 
 With auto-update enabled, marketplace updates are pulled automatically. The watcher service is updated on the next Claude session start.
 
@@ -116,9 +105,13 @@ systemctl --user daemon-reload
 
 ## Notes
 
-- **Zero config**: Drop a `daemon.json`, get a session. Remove it, session stops.
+- **Auto-discovery**: Install the plugin in a project, start a session — daemon runs
 - **Auto-restart**: If Claude exits, the watcher restarts its session on the next scan
 - **Linger**: Service runs even when logged out
 - **Remote control**: Add `"remoteControlAtStartup": true` to daemon.json, connect from claude.ai/code
 - **Multiple projects**: Each gets its own tmux session and Claude session — no conflicts
-- **Scan scope**: `~/` with max depth 4, excluding `node_modules` and `.git`
+- **Settings optional**: `daemon.json` is only needed for overrides, not for opt-in
+
+## Known Limitations
+
+See [TODO.md](TODO.md) for improvements pending plugin lifecycle hooks ([anthropics/claude-code#48986](https://github.com/anthropics/claude-code/issues/48986)).

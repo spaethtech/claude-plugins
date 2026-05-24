@@ -5,8 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash ${CLAUDE_PLUGIN_ROOT}/install.sh --quiet",
-            "async": true
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/setup.sh"
           }
         ]
       }

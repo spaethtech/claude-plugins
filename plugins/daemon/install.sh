@@ -2,8 +2,8 @@
 set -euo pipefail
 
 PLUGIN_DIR="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
-DATA_DIR="${CLAUDE_PLUGIN_DATA:-$PLUGIN_DIR/.data}"
 SERVICE_NAME="claude-daemon"
+DAEMON_HOME="$HOME/.local/share/claude-daemon"
 SYSTEMD_USER_DIR="$HOME/.config/systemd/user"
 SERVICE_FILE="$SYSTEMD_USER_DIR/${SERVICE_NAME}.service"
 
@@ -26,14 +26,14 @@ if ! command -v claude &>/dev/null; then
   exit 1
 fi
 
-mkdir -p "$SYSTEMD_USER_DIR" "$DATA_DIR"
+mkdir -p "$SYSTEMD_USER_DIR" "$DAEMON_HOME"
 
-# Copy service.sh to durable location (survives plugin cache cleanup)
-cp "$PLUGIN_DIR/service.sh" "$DATA_DIR/service.sh"
-chmod +x "$DATA_DIR/service.sh"
+# Copy service.sh to durable location (survives cache + data dir cleanup)
+cp "$PLUGIN_DIR/service.sh" "$DAEMON_HOME/service.sh"
+chmod +x "$DAEMON_HOME/service.sh"
 
-# Store the cache base path so the watcher can detect plugin removal
-echo "$PLUGIN_DIR" > "$DATA_DIR/.plugin-dir"
+# Store the cache path so the watcher can detect plugin removal/updates
+echo "$PLUGIN_DIR" > "$DAEMON_HOME/.plugin-dir"
 
 # Regenerate the service file (always, to pick up new paths on update)
 cat > "$SERVICE_FILE" <<EOF
@@ -44,8 +44,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-Environment=DAEMON_DATA_DIR=${DATA_DIR}
-ExecStart=${DATA_DIR}/service.sh
+Environment=DAEMON_HOME=${DAEMON_HOME}
+ExecStart=${DAEMON_HOME}/service.sh
 Restart=always
 RestartSec=10
 TimeoutStopSec=30

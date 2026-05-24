@@ -1,9 +1,9 @@
 #!/bin/bash -l
 set -euo pipefail
 
-DATA_DIR="${DAEMON_DATA_DIR:?DAEMON_DATA_DIR not set}"
-PROJECTS_FILE="$DATA_DIR/projects"
-PLUGIN_DIR_FILE="$DATA_DIR/.plugin-dir"
+DAEMON_HOME="${DAEMON_HOME:?DAEMON_HOME not set}"
+PROJECTS_FILE="$DAEMON_HOME/projects"
+PLUGIN_DIR_FILE="$DAEMON_HOME/.plugin-dir"
 SERVICE_NAME="claude-daemon"
 POLL_INTERVAL=10
 
@@ -64,7 +64,7 @@ teardown() {
   systemctl --user disable "$SERVICE_NAME" 2>/dev/null || true
   rm -f "$HOME/.config/systemd/user/${SERVICE_NAME}.service"
   systemctl --user daemon-reload 2>/dev/null || true
-  rm -rf "$DATA_DIR"
+  rm -rf "$DAEMON_HOME"
   echo "Daemon service removed."
   exit 0
 }
@@ -76,7 +76,6 @@ is_plugin_enabled() {
   local settings="$project_dir/.claude/settings.json"
   local settings_local="$project_dir/.claude/settings.local.json"
 
-  # Explicitly disabled at project level
   if [[ -f "$settings" ]] && grep -q '"daemon@spaethtech-plugins"[[:space:]]*:[[:space:]]*false' "$settings"; then
     return 1
   fi
@@ -104,13 +103,13 @@ while true; do
       if [[ "$latest" != "$current" ]]; then
         echo "Plugin updated: $current → $latest"
         new_plugin_dir="$cache_parent/$latest"
-        cp "$new_plugin_dir/service.sh" "$DATA_DIR/service.sh"
-        chmod +x "$DATA_DIR/service.sh"
+        cp "$new_plugin_dir/service.sh" "$DAEMON_HOME/service.sh"
+        chmod +x "$DAEMON_HOME/service.sh"
         echo "$new_plugin_dir" > "$PLUGIN_DIR_FILE"
-        echo "$latest" > "$DATA_DIR/.version"
+        echo "$latest" > "$DAEMON_HOME/.version"
         stop_all
         echo "Restarting watcher with updated service.sh..."
-        exec "$DATA_DIR/service.sh"
+        exec "$DAEMON_HOME/service.sh"
       fi
     fi
   fi

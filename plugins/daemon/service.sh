@@ -72,7 +72,7 @@ while true; do
     [[ ! -d "$project_dir" ]] && continue
 
     # Skip if plugin is disabled at project level
-    local settings="$project_dir/.claude/settings.json"
+    settings="$project_dir/.claude/settings.json"
     if [[ -f "$settings" ]] && grep -q '"daemon@spaethtech-plugins"[[:space:]]*:[[:space:]]*false' "$settings"; then
       # Stop session if it was running
       if [[ -n "${MTIMES[$project_dir]:-}" ]]; then
@@ -90,8 +90,8 @@ while true; do
       start_session "$project_dir"
     else
       # Check for daemon.json changes (added, modified, or removed)
-      local daemon_json="$project_dir/.claude/daemon.json"
-      local current_mtime="none"
+      daemon_json="$project_dir/.claude/daemon.json"
+      current_mtime="none"
       if [[ -f "$daemon_json" ]]; then
         current_mtime="$(stat -c %Y "$daemon_json")"
       fi

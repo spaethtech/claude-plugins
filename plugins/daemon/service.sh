@@ -95,6 +95,24 @@ while true; do
       echo "Plugin removed from cache: $plugin_dir"
       teardown
     fi
+
+    # Check for plugin update (newer version in cache)
+    cache_parent="$(dirname "$plugin_dir")"
+    if [[ -d "$cache_parent" ]]; then
+      latest="$(ls -1 "$cache_parent" | sort -V | tail -1)"
+      current="$(basename "$plugin_dir")"
+      if [[ "$latest" != "$current" ]]; then
+        echo "Plugin updated: $current → $latest"
+        new_plugin_dir="$cache_parent/$latest"
+        cp "$new_plugin_dir/service.sh" "$DATA_DIR/service.sh"
+        chmod +x "$DATA_DIR/service.sh"
+        echo "$new_plugin_dir" > "$PLUGIN_DIR_FILE"
+        echo "$latest" > "$DATA_DIR/.version"
+        stop_all
+        echo "Restarting watcher with updated service.sh..."
+        exec "$DATA_DIR/service.sh"
+      fi
+    fi
   fi
 
   # Read registered projects

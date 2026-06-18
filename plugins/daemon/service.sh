@@ -7,8 +7,13 @@ PROJECTS_FILE="$DATA_DIR/projects"
 SERVICE_NAME="claude-daemon"
 PLUGIN_KEY="daemon@spaethtech-plugins"
 POLL_INTERVAL=10
+# Consecutive "uninstalled from all projects" scans required before a destructive
+# teardown. At POLL_INTERVAL=10s this is a ~30s sustained signal, so a one-off failed
+# settings read (e.g. an OOM-killed grep) can never trigger self-removal.
+TEARDOWN_THRESHOLD=3
 
 declare -A MTIMES
+uninstall_streak=0
 
 session_id_for() {
   echo -n "$1" | sha256sum | \
@@ -81,23 +86,29 @@ teardown() {
 
 trap stop_all EXIT TERM INT
 
-# Check if plugin key exists (not value, just presence) in any settings file for a project
+# Check if plugin key exists (not value, just presence) in any settings file for a project.
+# Returns: 0 = installed (key found), 1 = confirmed absent (all files readable, no key),
+#          2 = inconclusive (a settings file exists but could not be read/grepped).
+#
+# The 2-state distinction is critical: a grep that fails because it was OOM-killed or
+# because the file was momentarily unreadable must NOT be mistaken for "the user removed
+# the plugin". Conflating those two is what lets transient memory pressure trick the
+# watcher into tearing down its own systemd unit. grep exits 0=match, 1=no-match, >1=error.
 plugin_installed_in() {
   local project_dir="$1"
-  local settings="$project_dir/.claude/settings.json"
-  local settings_local="$project_dir/.claude/settings.local.json"
-
-  if [[ -f "$settings" ]] && grep -q "\"$PLUGIN_KEY\"" "$settings"; then
-    return 0
-  fi
-  if [[ -f "$settings_local" ]] && grep -q "\"$PLUGIN_KEY\"" "$settings_local"; then
-    return 0
-  fi
-  # User-level settings
-  if [[ -f "$HOME/.claude/settings.json" ]] && grep -q "\"$PLUGIN_KEY\"" "$HOME/.claude/settings.json"; then
-    return 0
-  fi
-
+  local unknown=0 rc f
+  for f in "$project_dir/.claude/settings.json" \
+           "$project_dir/.claude/settings.local.json" \
+           "$HOME/.claude/settings.json"; do
+    [[ -f "$f" ]] || continue
+    if grep -q "\"$PLUGIN_KEY\"" "$f" 2>/dev/null; then
+      return 0
+    else
+      rc=$?
+      [[ $rc -gt 1 ]] && unknown=1
+    fi
+  done
+  [[ $unknown -eq 1 ]] && return 2
   return 1
 }
 
@@ -150,20 +161,38 @@ while true; do
     continue
   fi
 
-  # Check if plugin was uninstalled from ALL projects (entry removed entirely)
-  all_uninstalled=true
+  # Check if plugin was uninstalled from ALL projects (entry removed entirely).
+  # teardown() is destructive and irreversible (it rm's this unit and exits), so we
+  # guard it two ways: (1) an inconclusive read of any project's settings aborts the
+  # decision entirely, and (2) "absent everywhere" must hold for TEARDOWN_THRESHOLD
+  # consecutive scans before we act. Either guard alone defeats the OOM self-teardown.
+  any_installed=false
+  any_unknown=false
   while IFS= read -r project_dir; do
     [[ -z "$project_dir" ]] && continue
     [[ ! -d "$project_dir" ]] && continue
-    if plugin_installed_in "$project_dir"; then
-      all_uninstalled=false
-      break
-    fi
+    plugin_installed_in "$project_dir" && rc=0 || rc=$?
+    case $rc in
+      0) any_installed=true; break ;;
+      2) any_unknown=true ;;
+    esac
   done < "$PROJECTS_FILE"
 
-  if $all_uninstalled; then
-    echo "Plugin uninstalled from all projects"
-    teardown false
+  if $any_installed; then
+    uninstall_streak=0
+  elif $any_unknown; then
+    # Could not read some settings (transient error / memory pressure). Inconclusive —
+    # never tear down on a read we don't trust. Reset the streak and re-check next scan.
+    echo "Install check inconclusive (unreadable settings); deferring teardown"
+    uninstall_streak=0
+  else
+    uninstall_streak=$((uninstall_streak + 1))
+    if (( uninstall_streak >= TEARDOWN_THRESHOLD )); then
+      echo "Plugin uninstalled from all projects (confirmed ${uninstall_streak}x)"
+      teardown false
+    else
+      echo "Plugin appears uninstalled (${uninstall_streak}/${TEARDOWN_THRESHOLD}); deferring teardown"
+    fi
   fi
 
   # Process each registered project

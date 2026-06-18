@@ -111,6 +111,7 @@ systemctl --user daemon-reload
 - **Remote control**: Add `"remoteControlAtStartup": true` to daemon.json, connect from claude.ai/code
 - **Multiple projects**: Each gets its own tmux session and Claude session — no conflicts
 - **Settings optional**: `daemon.json` is only needed for overrides, not for opt-in
+- **Crash-safe teardown**: The watcher only removes its own systemd unit after confirming the plugin is absent from every registered project across several consecutive scans (~30s). A settings file that can't be read (e.g. a `grep` killed under memory pressure) is treated as *inconclusive* and never triggers removal — so transient OOM can't make the daemon delete itself.
 
 ## Known Limitations
 

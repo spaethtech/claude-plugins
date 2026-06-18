@@ -3,6 +3,22 @@
 All notable changes to the `daemon` plugin are documented here. This project
 follows [Semantic Versioning](https://semver.org/).
 
+## [2.3.2]
+
+### Fixed
+
+- **Version-bump restart loop in the `SessionStart` hook.** `setup.sh` ran
+  `install.sh` (which calls `systemctl --user restart`) *before* writing the
+  cached `.version` marker. On an update the restart tears down the service
+  cgroup the hook runs in and SIGTERMs `setup.sh` mid-script, so the marker
+  never advanced past the old version. Every subsequent session then saw the
+  same stale mismatch and re-triggered install → restart → kill, bouncing the
+  watcher (and its tmux/Claude session) every ~2s.
+
+  The marker is now written **before** `install.sh`, making the update
+  idempotent: a restart that kills the hook still leaves `CURRENT == EXPECTED`,
+  so the next session is a no-op.
+
 ## [2.3.1]
 
 ### Fixed

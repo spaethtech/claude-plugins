@@ -12,8 +12,14 @@ EXPECTED=$(grep -o '"version"[[:space:]]*:[[:space:]]*"[^"]*"' "$PLUGIN_DIR/.cla
 CURRENT=$(cat "$DATA_DIR/.version" 2>/dev/null || true)
 
 if [[ "$CURRENT" != "$EXPECTED" ]]; then
-  bash "$PLUGIN_DIR/install.sh" --quiet
+  # Write the marker BEFORE install.sh. On an update, install.sh runs
+  # `systemctl --user restart`, which tears down the service cgroup this hook is
+  # running in and SIGTERMs us mid-script. If the marker were written afterward it
+  # would never advance, so every subsequent session would re-trigger the update →
+  # restart → kill loop. Marking first makes the update idempotent: a restart that
+  # kills us still leaves CURRENT == EXPECTED, so the next session is a no-op.
   echo "$EXPECTED" > "$DATA_DIR/.version"
+  bash "$PLUGIN_DIR/install.sh" --quiet
 fi
 
 # Register this project with the watcher

@@ -112,17 +112,50 @@ plugin_installed_in() {
   return 1
 }
 
-# Check if plugin is explicitly disabled (value is false)
+# Read an explicit true|false value for the plugin key from a settings file.
+# Echoes "true" or "false" on success (rc=0). Returns rc=1 if the file is
+# absent or the key is missing / not an explicit bool. Returns rc=2 if the
+# file exists but grep failed (transient read error).
+plugin_value_in() {
+  local f="$1" match rc
+  [[ -f "$f" ]] || return 1
+  match=$(grep -oE "\"$PLUGIN_KEY\"[[:space:]]*:[[:space:]]*(true|false)" "$f" 2>/dev/null)
+  rc=$?
+  [[ $rc -gt 1 ]] && return 2
+  [[ -z "$match" ]] && return 1
+  if [[ "$match" =~ :[[:space:]]*true ]]; then
+    echo "true"
+  else
+    echo "false"
+  fi
+  return 0
+}
+
+# Precedence follows Claude Code's own settings layering:
+#   settings.local.json  >  settings.json  >  default (enabled).
+# The local override is where an operator says "on THIS host I want a
+# different state" — a design choice by Anthropic that svelte-ui's
+# `settings.local.json` matches. Whichever file explicitly sets the plugin
+# to true/false wins; unrelated fields (or a missing key) fall through to
+# the next tier. Neither file explicitly defining a bool → enabled by
+# default (matches the pre-2.4.0 behaviour of "no `: false` seen").
+#
+# Read errors on a specific file fall through to the next tier rather than
+# tipping the session state — the per-project loop is non-destructive (one
+# bad poll = one wrong session start/stop that self-corrects on the next
+# scan), so defensive defer isn't worth the complexity here.
 is_plugin_enabled() {
   local project_dir="$1"
-  local settings="$project_dir/.claude/settings.json"
-  local settings_local="$project_dir/.claude/settings.local.json"
+  local val
 
-  if [[ -f "$settings" ]] && grep -q "\"$PLUGIN_KEY\"[[:space:]]*:[[:space:]]*false" "$settings"; then
-    return 1
+  if val=$(plugin_value_in "$project_dir/.claude/settings.local.json"); then
+    [[ "$val" == "true" ]]
+    return
   fi
-  if [[ -f "$settings_local" ]] && grep -q "\"$PLUGIN_KEY\"[[:space:]]*:[[:space:]]*false" "$settings_local"; then
-    return 1
+
+  if val=$(plugin_value_in "$project_dir/.claude/settings.json"); then
+    [[ "$val" == "true" ]]
+    return
   fi
 
   return 0

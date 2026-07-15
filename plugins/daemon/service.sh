@@ -13,6 +13,10 @@ POLL_INTERVAL=10
 TEARDOWN_THRESHOLD=3
 
 declare -A MTIMES
+# project_dir → the tmux session name it was actually started with. Lets a mid-session `sessionName`
+# change kill the OLD session (by its real name) before starting the renamed one, instead of orphaning
+# it. Rebuilt by adoption on watcher restart (see the reload loop).
+declare -A SESSION_NAMES
 uninstall_streak=0
 
 session_id_for() {
@@ -20,10 +24,50 @@ session_id_for() {
     sed 's/^\(.\{8\}\)\(.\{4\}\)\(.\{4\}\)\(.\{4\}\)\(.\{12\}\).*/\1-\2-\3-\4-\5/'
 }
 
+# tmux session NAME for a project — the `sessionName` from daemon.json used verbatim (NO `claude-`
+# prefix), else the project directory's basename. tmux target syntax treats '.' and ':' specially
+# (window / pane separators) and whitespace is awkward, so ONLY those characters are replaced with '-';
+# everything else is kept as-is. A missing/empty/null value, or an unreadable/invalid daemon.json,
+# falls back to the directory basename.
+# NOTE: two projects that pick the same `sessionName` collide on the tmux name; their conversations
+# still stay separate (the session ID is path-derived), but the second tmux session won't start.
+tmux_session_for() {
+  local project_dir="$1"
+  local daemon_json="$project_dir/.claude/daemon.json"
+  local name=""
+  if [[ -f "$daemon_json" ]]; then
+    name="$(jq -r '.sessionName // empty' "$daemon_json" 2>/dev/null || true)"
+  fi
+  if [[ -z "$name" ]]; then
+    name="$(basename "$project_dir")"
+  fi
+  # Neutralize only the tmux-hostile characters; keep the rest verbatim.
+  printf '%s' "$name" | sed 's/[.:[:space:]]/-/g'
+}
+
+# Claude DISPLAY label (the `-n` flag — what shows in claude.ai, the mobile app, and Desktop). A
+# `remoteLabel` string in daemon.json wins; otherwise the project directory's basename. Same fallback
+# on a missing/empty/null value or an unreadable/invalid daemon.json.
+remote_label_for() {
+  local project_dir="$1"
+  local daemon_json="$project_dir/.claude/daemon.json"
+  local name=""
+  if [[ -f "$daemon_json" ]]; then
+    name="$(jq -r '.remoteLabel // empty' "$daemon_json" 2>/dev/null || true)"
+  fi
+  if [[ -n "$name" ]]; then
+    printf '%s' "$name"
+  else
+    basename "$project_dir"
+  fi
+}
+
 start_session() {
   local project_dir="$1"
-  local project_name="$(basename "$project_dir")"
-  local session="claude-${project_name}"
+  local session
+  session="$(tmux_session_for "$project_dir")"
+  local remote_label
+  remote_label="$(remote_label_for "$project_dir")"
   local daemon_json="$project_dir/.claude/daemon.json"
   local session_id="$(session_id_for "$project_dir")"
 
@@ -42,19 +86,32 @@ start_session() {
     MTIMES["$project_dir"]="none"
   fi
 
-  tmux new-session -d -s "$session" -c "$project_dir" \
-    "bash -lc 'exec claude $session_flag -n $project_name $settings_flag'"
+  # Remember the real tmux name so a later `sessionName` change can kill THIS session (not a freshly
+  # recomputed name) before starting the renamed one — see the reload loop.
+  SESSION_NAMES["$project_dir"]="$session"
 
-  echo "Started session: $session ($project_dir)"
+  # The display label is passed through a tmux session env var (`-e`) and expanded at the innermost
+  # shell, so a label with spaces or quotes needs no nested-quote gymnastics in the command below.
+  tmux new-session -d -s "$session" -c "$project_dir" \
+    -e "DAEMON_SESSION_NAME=$remote_label" \
+    "bash -lc 'exec claude $session_flag -n \"\$DAEMON_SESSION_NAME\" $settings_flag'"
+
+  echo "Started session: $session ($project_dir) [label: $remote_label]"
 }
 
 stop_session() {
   local project_dir="$1"
-  local project_name="$(basename "$project_dir")"
-  local session="claude-${project_name}"
+  # Kill the session under the name it was actually STARTED with (tracked), so a mid-session
+  # `sessionName` change still targets the running session. Fall back to recomputing the name when the
+  # tracking map is empty (e.g. the first scan after a watcher restart, before adoption).
+  local session="${SESSION_NAMES[$project_dir]:-}"
+  if [[ -z "$session" ]]; then
+    session="$(tmux_session_for "$project_dir")"
+  fi
 
   tmux kill-session -t "$session" 2>/dev/null || true
   unset "MTIMES[$project_dir]"
+  unset "SESSION_NAMES[$project_dir]"
   echo "Stopped session: $session"
 }
 
@@ -246,12 +303,13 @@ while true; do
 
     ACTIVE["$project_dir"]=1
     active_count=$((active_count + 1))
-    project_name="$(basename "$project_dir")"
-    session="claude-${project_name}"
 
-    if ! tmux has-session -t "$session" 2>/dev/null; then
-      start_session "$project_dir"
-    else
+    known_session="${SESSION_NAMES[$project_dir]:-}"
+    if [[ -n "$known_session" ]] && tmux has-session -t "$known_session" 2>/dev/null; then
+      # Running and tracked. Any daemon.json edit (sessionName OR remoteLabel) → restart to apply it.
+      # stop_session targets the KNOWN old name, so a sessionName change kills the running session
+      # cleanly before the renamed one starts; the restart resumes the same conversation (the session
+      # ID is path-derived), so history is preserved under the new name.
       daemon_json="$project_dir/.claude/daemon.json"
       current_mtime="none"
       if [[ -f "$daemon_json" ]]; then
@@ -260,6 +318,23 @@ while true; do
       if [[ "${MTIMES[$project_dir]:-}" != "$current_mtime" ]]; then
         echo "daemon.json changed: $project_dir"
         stop_session "$project_dir"
+        start_session "$project_dir"
+      fi
+    else
+      # Not tracked as running. After a watcher restart the tmux session may already exist under its
+      # derived name — adopt it (seed the tracking + mtime maps) instead of starting a duplicate.
+      # Otherwise start it. (If sessionName changed while the watcher was down, the derived name won't
+      # match the old running session and a new one starts, leaving the old orphaned — a rare edge.)
+      expected_session="$(tmux_session_for "$project_dir")"
+      if tmux has-session -t "$expected_session" 2>/dev/null; then
+        SESSION_NAMES["$project_dir"]="$expected_session"
+        daemon_json="$project_dir/.claude/daemon.json"
+        if [[ -f "$daemon_json" ]]; then
+          MTIMES["$project_dir"]="$(stat -c %Y "$daemon_json")"
+        else
+          MTIMES["$project_dir"]="none"
+        fi
+      else
         start_session "$project_dir"
       fi
     fi

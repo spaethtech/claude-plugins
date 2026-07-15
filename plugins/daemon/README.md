@@ -30,15 +30,15 @@ Plugin installed in project
   └─ SessionStart hook fires
        └─ setup.sh registers project in ${CLAUDE_PLUGIN_DATA}/projects
             └─ claude-daemon.service (watcher)
-                 └─ tmux "claude-<dirname>"
+                 └─ tmux "<dirname>"
                       └─ claude --resume <derived-uuid> -n <dirname>
 ```
 
 | Derived value | Source |
 |---------------|--------|
-| Claude session name | Directory name |
+| tmux session name | `sessionName` in `.claude/daemon.json` (verbatim), else the directory name |
+| Claude display label (`-n`) | `remoteLabel` in `.claude/daemon.json`, else the directory name |
 | Session ID | Deterministic UUID from project path (sha256) |
-| tmux session | `claude-<dirname>` |
 | Settings | `.claude/daemon.json` merged on top of `.claude/settings.json` (if present) |
 
 ## Usage
@@ -57,6 +57,33 @@ Create `.claude/daemon.json` to override settings for the daemon session only �
 ```
 
 This file is optional. Without it, the daemon uses the project's standard `.claude/settings.json`.
+
+#### Naming the session
+
+By default both the tmux session and the Claude display label are the project directory name. Two
+independent keys override them:
+
+```json
+{
+  "sessionName": "prod-worker",
+  "remoteLabel": "Prod Worker — phone"
+}
+```
+
+- **`sessionName`** — the **tmux** session name, used verbatim (no `claude-` prefix), so
+  `tmux attach -t prod-worker` works. Characters tmux treats specially in targeting — `.`, `:`, and
+  whitespace — are replaced with `-`. Two projects sharing a `sessionName` collide on the tmux name
+  (the second won't start), though their histories stay separate (the session ID is path-derived).
+- **`remoteLabel`** — the **Claude display label** (the `-n` flag) shown in claude.ai, the mobile app,
+  and Claude Desktop.
+
+Each falls back to the directory name independently when missing or empty.
+
+**Renaming keeps your history.** Editing either key is picked up by the live-reload watcher, which
+**stops and restarts** the session (not a live rename) — and it tracks the running tmux name, so a
+`sessionName` change kills the old session cleanly before starting the renamed one. The restart
+relaunches with `--resume`, and the session ID is derived from the project path — not the name — so it
+reopens the **same conversation** under the new name/label. You lose nothing but a brief restart.
 
 ### Live Reload
 

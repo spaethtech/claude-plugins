@@ -3,6 +3,41 @@
 All notable changes to the `daemon` plugin are documented here. This project
 follows [Semantic Versioning](https://semver.org/).
 
+## [2.5.0]
+
+### Added
+
+- **Two independent name overrides in `daemon.json`: `sessionName` (tmux) and `remoteLabel` (Claude
+  display label).** By default both derive from the project directory name; set either to override:
+
+  ```json
+  {
+    "sessionName": "prod-worker",
+    "remoteLabel": "Prod Worker — phone",
+    "remoteControlAtStartup": true
+  }
+  ```
+
+  - **`sessionName`** → the **tmux session name**, used **verbatim** (no `claude-` prefix — this
+    changes the default from `claude-<dirname>` to `<dirname>`). So `tmux attach -t prod-worker` just
+    works. Only tmux-hostile characters are adjusted: `.`, `:`, and whitespace become `-` (they would
+    otherwise break tmux's `session:window.pane` targeting). Two projects choosing the same
+    `sessionName` collide on the tmux name (the second won't start); their histories still stay
+    separate since the session ID is path-derived.
+  - **`remoteLabel`** → the **Claude display label** (the `-n` flag) shown in claude.ai, the mobile
+    app, and Claude Desktop. Passed via a tmux session env var, so labels with spaces or quotes are
+    handled safely.
+
+  A missing/empty/`null` value — or an unreadable/invalid `daemon.json` — falls back to the
+  directory name for each, independently.
+
+  **Both handle a mid-session rename, with history preserved.** Editing either key is picked up by the
+  existing mtime watcher (~10s) as a **stop + start** (not a live rename). The watcher tracks each
+  session's actual tmux name, so a `sessionName` change kills the *old* session cleanly before starting
+  the renamed one — no orphan, no duplicate. The restart relaunches with `--resume <session-id>`, and
+  the session ID is derived from the project **path** (unchanged by either name), so the **same
+  conversation** reopens — every turn preserved — under the new tmux name and/or label.
+
 ## [2.4.0]
 
 ### Changed

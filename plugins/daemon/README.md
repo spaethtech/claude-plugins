@@ -138,6 +138,43 @@ reparenting to PID 1 — so a leaked process stays attributable to its origin se
 background work is left alone (that's `claude`'s to manage). Every unreadable `/proc` read is skipped
 rather than guessed, and live `claude` processes are always excluded — reaping can't kill a session.
 
+#### Stalled / hung processes
+
+Orphan reaping only fires once a session's owner is *gone*. To also kill processes that hang while the
+session is still **live**, add a `stalled` sub-block. This judges a still-owned process, so it's
+heuristic — **off by default**, and it must look stalled for `checks` **consecutive** sweeps (~1min
+each) before anything is killed:
+
+```json
+{
+  "reapProcesses": {
+    "protect": ["vite", "node .* dev"],
+    "stalled": {
+      "enabled": true,
+      "checks": 3,
+      "minAgeSeconds": 600,
+      "uninterruptible": true,
+      "cpuIdle": false
+    }
+  }
+}
+```
+
+| Key | Default | Meaning |
+|-----|---------|---------|
+| `enabled` | `false` | Turn stalled/hung detection on for this project |
+| `checks` | `3` | Consecutive sweeps the process must look stalled before it's killed (~1 min/sweep) |
+| `minAgeSeconds` | `600` | Ignore processes younger than this |
+| `uninterruptible` | `true` | Flag a process stuck in state **D** (uninterruptible sleep) — the specific, low-false-positive "hung on I/O" signal |
+| `cpuIdle` | `false` | Also flag a process whose CPU time isn't advancing. **Aggressive:** this also matches anything legitimately idle-but-waiting — an idle dev server, even claude's own idle helpers — so enable it only with a `protect[]` list |
+
+Kills use the same `graceSeconds` path and honor `protect[]`. Zombies (state **Z**) are skipped —
+they're already dead, so `SIGKILL` can't remove them (only their parent reaping them can). The counter
+resets the instant a process looks healthy again (e.g. its CPU advances), so a process that merely
+paused is never killed. Note this is **not** true hang-proof detection — a genuinely idle-but-healthy
+process is indistinguishable from a hung one by these signals, which is why `cpuIdle` leans on
+`protect[]` and why the whole feature is opt-in.
+
 ### Auto-updating Claude
 
 A running `claude` process never upgrades in place — an update lands on disk but the running process

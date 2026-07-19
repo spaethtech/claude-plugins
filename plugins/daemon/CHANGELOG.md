@@ -3,6 +3,51 @@
 All notable changes to the `daemon` plugin are documented here. This project
 follows [Semantic Versioning](https://semver.org/).
 
+## [2.8.0]
+
+### Added
+
+- **Stalled/hung background-process detection** (`reapProcesses.stalled`). Complements the existing
+  reaping: orphan reaping handles processes whose owner is *gone*; this judges processes on a **live**
+  session that appear hung. Because it acts on a still-owned process it's inherently heuristic, so it's
+  **off by default** and requires the stalled condition to hold for `checks` **consecutive** sweeps
+  before killing.
+
+  ```json
+  {
+    "reapProcesses": {
+      "stalled": {
+        "enabled": false,
+        "checks": 3,
+        "minAgeSeconds": 600,
+        "uninterruptible": true,
+        "cpuIdle": false
+      }
+    }
+  }
+  ```
+
+  A tagged process counts as stalled in a sweep only if it is older than `minAgeSeconds` **and** matches
+  an enabled signal:
+  - **`uninterruptible`** (default **on**): process in state **D** (uninterruptible sleep) — the
+    textbook hung-on-I/O signal. Healthy idle processes sit in **S**, not **D**, so this is specific and
+    low-false-positive.
+  - **`cpuIdle`** (default **off**): the process's CPU time hasn't advanced since the previous sweep.
+    Catches spin-free logical hangs/deadlocks, but also flags anything legitimately idle-but-waiting —
+    an idle dev server, and even claude's own idle helper processes (they carry the session tag). Enable
+    it only alongside a `protect[]` list for whatever is meant to sit idle.
+
+  Kills go through the shared grace path (`graceSeconds`: SIGTERM → wait → SIGKILL) and honor
+  `reapProcesses.protect[]`. Zombies (state **Z**) are skipped — they're already dead, so SIGKILL can't
+  remove them (only their parent reaping them can). The live claude pane is always excluded, and every
+  unreadable `/proc` read is skipped rather than guessed. The counter resets the moment a process looks
+  healthy again (e.g. its CPU advances), so a process that merely paused is never killed.
+
+### Changed
+
+- Refactored the reaper's process-enumeration and grace-kill into shared `tagged_pids_for` /
+  `kill_gracefully` helpers, now used by both orphan/age reaping and stalled detection.
+
 ## [2.7.0]
 
 ### Added

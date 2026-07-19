@@ -35,6 +35,12 @@ declare -A DEAD_SWEEPS
 # session is stale and (per policy) restarted to adopt the update — a running process never picks up an
 # update in place. Set at start_session; used by the auto-update adoption check in the loop.
 declare -A SESSION_VERSIONS
+# pid → last observed CPU time (clock ticks) and consecutive sweeps the process has looked stalled.
+# Used by stalled/hung detection (detect_stalled_for_session) to require sustained no-progress before
+# killing. Pruned each sweep as pids vanish. Keyed by raw pid — pid reuse across a ~minutes window is
+# negligible, and a reused pid simply re-baselines (its counter resets the first sweep it looks healthy).
+declare -A PROC_CPU
+declare -A PROC_STALL
 uninstall_streak=0
 sweep_counter=0
 # Epoch of the last `claude update` run. Initialised in-loop to defer the first update by one interval
@@ -158,6 +164,33 @@ start_session() {
   echo "Started session: $session ($project_dir) [label: $remote_label]"
 }
 
+# Echo the pids whose environment carries this DAEMON_SESSION_ID tag — i.e. a session's whole
+# descendant tree, even after reparenting to PID 1. An unreadable environ (other user / race) is
+# silently skipped: grep opens the file itself so its permission error goes to /dev/null.
+tagged_pids_for() {
+  local sid="$1" environ pid
+  for environ in /proc/[0-9]*/environ; do
+    pid="${environ#/proc/}"; pid="${pid%/environ}"
+    grep -qz "^DAEMON_SESSION_ID=${sid}\$" "$environ" 2>/dev/null && echo "$pid"
+  done
+}
+
+# SIGTERM a list of pids, wait $1 seconds, then SIGKILL any survivors. No-op on an empty list, so the
+# grace sleep is only ever paid when there's actually something to kill.
+kill_gracefully() {
+  local grace="$1"; shift
+  local -a pids=("$@")
+  ((${#pids[@]})) || return 0
+  kill -TERM "${pids[@]}" 2>/dev/null || true
+  sleep "$grace"
+  local -a survivors=() p
+  for p in "${pids[@]}"; do kill -0 "$p" 2>/dev/null && survivors+=("$p"); done
+  if ((${#survivors[@]})); then
+    echo "SIGKILL ${#survivors[@]} survivor(s)"
+    kill -KILL "${survivors[@]}" 2>/dev/null || true
+  fi
+}
+
 # Reap the background processes a daemon session leaked. Anchored on the DAEMON_SESSION_ID env tag
 # (see start_session), so it finds the whole descendant tree even after reparenting to PID 1.
 #   $1 project_dir  — for per-project policy; may no longer exist (daemon.json removed) → safe defaults
@@ -195,11 +228,9 @@ reap_procs() {
   live_panes=" $(tmux list-panes -a -F '#{pane_pid}' 2>/dev/null | tr '\n' ' ') "
 
   local -a targets=()
-  local environ pid cmdline p skip age
-  for environ in /proc/[0-9]*/environ; do
-    pid="${environ#/proc/}"; pid="${pid%/environ}"
-    # Exact-match the tag as a NUL-delimited env entry. Unreadable environ (other users / race) → skip.
-    grep -qz "^DAEMON_SESSION_ID=${sid}\$" "$environ" 2>/dev/null || continue
+  local pid cmdline p skip age
+  while IFS= read -r pid; do
+    [[ -z "$pid" ]] && continue
     [[ "$live_panes" == *" $pid "* ]] && continue
     if [[ "$mode" == "aged" ]]; then
       age=$(ps -o etimes= -p "$pid" 2>/dev/null | tr -d ' ')
@@ -215,20 +246,93 @@ reap_procs() {
       $skip && continue
     fi
     targets+=("$pid")
-  done
+  done < <(tagged_pids_for "$sid")
 
   ((${#targets[@]})) || return 0
   echo "Reaping ${#targets[@]} leaked proc(s) [$mode] for session ${sid:0:8}"
-  kill -TERM "${targets[@]}" 2>/dev/null || true
-  sleep "$grace"
-  local -a survivors=()
-  for pid in "${targets[@]}"; do
-    kill -0 "$pid" 2>/dev/null && survivors+=("$pid")
-  done
-  if ((${#survivors[@]})); then
-    echo "SIGKILL ${#survivors[@]} survivor(s) for session ${sid:0:8}"
-    kill -KILL "${survivors[@]}" 2>/dev/null || true
-  fi
+  kill_gracefully "$grace" "${targets[@]}"
+}
+
+# Detect and kill STALLED/HUNG background processes on a LIVE session. Unlike orphan reaping (owner
+# dead → definitely safe) this judges a still-owned process, so it's inherently heuristic and strictly
+# opt-in via reapProcesses.stalled. Runs once per sweep and requires the stalled condition to hold for
+# `checks` CONSECUTIVE sweeps (state carried in PROC_STALL/PROC_CPU) before killing — a momentary D or a
+# single flat-CPU reading never fires.
+#
+# A process counts as stalled this sweep only if it is old enough (minAgeSeconds) AND either:
+#   • uninterruptible (default ON):  in state D (uninterruptible sleep) — the textbook hung-on-I/O
+#     signal; healthy idle processes sit in S, not D, so this is specific and low-false-positive.
+#   • cpuIdle (default OFF):  its CPU time hasn't advanced since last sweep. Catches spin-free logical
+#     hangs, but ALSO flags anything legitimately idle-but-waiting (an idle dev server, and even
+#     claude's own idle helper processes, which carry the tag) — so it's off by default; when you
+#     enable it, protect[] the things meant to sit idle.
+#
+# Zombies (state Z) are skipped: they're already dead, so SIGKILL can't remove them — only their parent
+# reaping them can. The live claude pane is always excluded, and every unreadable /proc read is skipped.
+detect_stalled_for_session() {
+  local project_dir="$1" sid="$2"
+  local dj="$project_dir/.claude/daemon.json"
+  [[ -f "$dj" ]] || return 0
+  [[ "$(jq -r '(.reapProcesses.stalled.enabled) // false' "$dj" 2>/dev/null || echo false)" == "true" ]] || return 0
+
+  local checks min_age cpu_idle uninterruptible grace
+  checks=$(         jq -r '(.reapProcesses.stalled.checks)          // 3'     "$dj" 2>/dev/null || echo 3)
+  min_age=$(        jq -r '(.reapProcesses.stalled.minAgeSeconds)   // 600'   "$dj" 2>/dev/null || echo 600)
+  cpu_idle=$(       jq -r '(.reapProcesses.stalled.cpuIdle)         // false' "$dj" 2>/dev/null || echo false)
+  uninterruptible=$(jq -r '(.reapProcesses.stalled.uninterruptible) // true'  "$dj" 2>/dev/null || echo true)
+  grace=$(          jq -r '(.reapProcesses.graceSeconds)            // 5'     "$dj" 2>/dev/null || echo 5)
+  [[ "$checks"   =~ ^[0-9]+$ ]] || checks=3
+  [[ "$min_age"  =~ ^[0-9]+$ ]] || min_age=600
+  [[ "$grace"    =~ ^[0-9]+$ ]] || grace=5
+  local -a protect=()
+  mapfile -t protect < <(jq -r '.reapProcesses.protect[]? // empty' "$dj" 2>/dev/null || true)
+
+  local live_panes
+  live_panes=" $(tmux list-panes -a -F '#{pane_pid}' 2>/dev/null | tr '\n' ' ') "
+
+  local -a kill_list=()
+  local pid stat_line rest state cpu age prev stalled_now cmdline p skip
+  local -a F
+  while IFS= read -r pid; do
+    [[ -z "$pid" ]] && continue
+    [[ "$live_panes" == *" $pid "* ]] && continue
+    stat_line=$(cat "/proc/$pid/stat" 2>/dev/null) || continue   # gone / unreadable → skip
+    rest=${stat_line##*") "}                                      # drop "<pid> (<comm>) "; rest starts at state
+    read -ra F <<< "$rest"
+    state=${F[0]}
+    [[ "$state" == "Z" ]] && { PROC_STALL["$pid"]=0; continue; }  # zombie: unkillable, don't count it
+    cpu=$(( ${F[11]:-0} + ${F[12]:-0} ))                          # utime + stime, in clock ticks
+    age=$(ps -o etimes= -p "$pid" 2>/dev/null | tr -d ' ')
+    if ! [[ "$age" =~ ^[0-9]+$ ]]; then PROC_STALL["$pid"]=0; PROC_CPU["$pid"]=$cpu; continue; fi
+
+    prev="${PROC_CPU[$pid]:-}"
+    stalled_now=false
+    if (( age >= min_age )); then
+      if [[ "$uninterruptible" == "true" && "$state" == "D" ]]; then stalled_now=true; fi
+      if [[ "$cpu_idle" == "true" && -n "$prev" ]] && (( cpu == prev )); then stalled_now=true; fi
+    fi
+    PROC_CPU["$pid"]=$cpu
+
+    if ! $stalled_now; then PROC_STALL["$pid"]=0; continue; fi
+    PROC_STALL["$pid"]=$(( ${PROC_STALL[$pid]:-0} + 1 ))
+    (( ${PROC_STALL[$pid]} >= checks )) || continue
+
+    if ((${#protect[@]})); then
+      cmdline=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)
+      skip=false
+      for p in "${protect[@]}"; do
+        [[ -n "$p" && "$cmdline" =~ $p ]] && { skip=true; break; }
+      done
+      $skip && continue
+    fi
+    kill_list+=("$pid")
+  done < <(tagged_pids_for "$sid")
+
+  ((${#kill_list[@]})) || return 0
+  echo "Stalled: killing ${#kill_list[@]} hung proc(s) [checks=$checks] for session ${sid:0:8}"
+  kill_gracefully "$grace" "${kill_list[@]}"
+  local dead
+  for dead in "${kill_list[@]}"; do unset "PROC_STALL[$dead]" "PROC_CPU[$dead]"; done
 }
 
 stop_session() {
@@ -560,9 +664,10 @@ while true; do
 
   # ── Periodic leaked-process sweep (every ~SWEEP_EVERY polls ≈ 60s) ──────────────────────────────
   # stop_session already reaps on graceful stops/restarts. This catches the cases that never reach it:
-  # a claude that crashed or was OOM-killed leaves tagged orphans behind. It also drives opt-in
-  # age-based reaping on still-live sessions. Orphan reaping waits ORPHAN_SWEEP_THRESHOLD consecutive
-  # dead sweeps so a transient tmux failure can't be mistaken for "the session died".
+  # a claude that crashed or was OOM-killed leaves tagged orphans behind. It also drives, on still-live
+  # sessions, opt-in age-based reaping (reap_procs aged) and stalled/hung detection
+  # (detect_stalled_for_session). Orphan reaping waits ORPHAN_SWEEP_THRESHOLD consecutive dead sweeps so
+  # a transient tmux failure can't be mistaken for "the session died".
   sweep_counter=$(( sweep_counter + 1 ))
   if (( sweep_counter % SWEEP_EVERY == 0 )); then
     declare -A SID_TO_PROJECT LIVE_SIDS
@@ -583,6 +688,7 @@ while true; do
       if [[ -n "${LIVE_SIDS[$sid]:-}" ]]; then
         DEAD_SWEEPS["$sid"]=0
         reap_procs "$proj" "$sid" aged          # live owner → only over-age procs (opt-in)
+        detect_stalled_for_session "$proj" "$sid"   # live owner → stalled/hung procs (opt-in)
       else
         DEAD_SWEEPS["$sid"]=$(( ${DEAD_SWEEPS[$sid]:-0} + 1 ))
         if (( ${DEAD_SWEEPS[$sid]} >= ORPHAN_SWEEP_THRESHOLD )); then
@@ -598,6 +704,11 @@ while true; do
       done | tr '\0' '\n' | sort -u | sed 's/^DAEMON_SESSION_ID=//'
     )
     unset SID_TO_PROJECT LIVE_SIDS
+
+    # Prune stalled-tracking state for pids that no longer exist, so the maps don't grow unbounded.
+    for gone in "${!PROC_STALL[@]}"; do
+      [[ -d "/proc/$gone" ]] || unset "PROC_STALL[$gone]" "PROC_CPU[$gone]"
+    done
   fi
 
   sleep "$POLL_INTERVAL"

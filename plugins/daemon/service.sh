@@ -11,13 +11,35 @@ POLL_INTERVAL=10
 # teardown. At POLL_INTERVAL=10s this is a ~30s sustained signal, so a one-off failed
 # settings read (e.g. an OOM-killed grep) can never trigger self-removal.
 TEARDOWN_THRESHOLD=3
+# Consecutive scans a project's daemon.json must be MISSING before its session is stopped. At
+# POLL_INTERVAL=10s this is a ~20s grace so an editor's truncate/unlink during an atomic save can't
+# bounce the session. daemon.json presence is the per-project opt-in gate (see setup.sh).
+DAEMON_JSON_ABSENCE_THRESHOLD=2
+# Run the leaked-process sweep every Nth poll (6 * 10s ≈ 60s) — reading /proc every scan is wasteful.
+SWEEP_EVERY=6
+# Consecutive sweeps a session id must be seen with NO live tmux session before its orphaned
+# background processes are reaped. Guards against a transient tmux hiccup fratricide-ing a live
+# session's children; on-restart reaping (via stop_session) is immediate because the kill is definite.
+ORPHAN_SWEEP_THRESHOLD=2
 
 declare -A MTIMES
 # project_dir → the tmux session name it was actually started with. Lets a mid-session `sessionName`
 # change kill the OLD session (by its real name) before starting the renamed one, instead of orphaning
 # it. Rebuilt by adoption on watcher restart (see the reload loop).
 declare -A SESSION_NAMES
+# project_dir → consecutive scans daemon.json has been missing (debounce; see the reload loop).
+declare -A ABSENT_STREAK
+# session_id → consecutive sweeps observed with no live tmux session (orphan-reap confirmation).
+declare -A DEAD_SWEEPS
+# project_dir → the `claude --version` a session was STARTED with. When the on-disk version differs, the
+# session is stale and (per policy) restarted to adopt the update — a running process never picks up an
+# update in place. Set at start_session; used by the auto-update adoption check in the loop.
+declare -A SESSION_VERSIONS
 uninstall_streak=0
+sweep_counter=0
+# Epoch of the last `claude update` run. Initialised in-loop to defer the first update by one interval
+# (so a watcher restart doesn't trigger an immediate update every time).
+last_update_epoch=0
 
 session_id_for() {
   echo -n "$1" | sha256sum | \
@@ -62,6 +84,34 @@ remote_label_for() {
   fi
 }
 
+# The installed claude version, normalised to bare X.Y.Z (drops the " (Claude Code)" suffix). Empty if
+# claude can't be run — callers treat empty as "unknown" and never restart on it.
+claude_version() {
+  claude --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1
+}
+
+# Read a field from a project's autoUpdate block, echoing $3 when the file/key is missing or unreadable.
+autoupdate_field() {
+  local dj="$1/.claude/daemon.json" field="$2" default="$3"
+  [[ -f "$dj" ]] || { echo "$default"; return; }
+  jq -r "(.autoUpdate.$field) // \"$default\"" "$dj" 2>/dev/null || echo "$default"
+}
+
+# True when a session is quiet — its transcript hasn't been written for >= idle_min minutes. Used to
+# avoid restarting a session mid-task to adopt an update. A missing transcript counts as idle (nothing
+# in flight); an unreadable one counts as NOT idle (defer the restart — never guess it's safe).
+session_idle() {
+  local project_dir="$1" idle_min="$2"
+  [[ "$idle_min" =~ ^[0-9]+$ ]] || idle_min=5
+  local sid transcript mtime now
+  sid="$(session_id_for "$project_dir")"
+  transcript="$(find "$HOME/.claude/projects" -name "${sid}.jsonl" 2>/dev/null | head -1)"
+  [[ -z "$transcript" ]] && return 0
+  mtime="$(stat -c %Y "$transcript" 2>/dev/null)" || return 1
+  now="$(date +%s)"
+  (( now - mtime >= idle_min * 60 ))
+}
+
 start_session() {
   local project_dir="$1"
   local session
@@ -92,11 +142,93 @@ start_session() {
 
   # The display label is passed through a tmux session env var (`-e`) and expanded at the innermost
   # shell, so a label with spaces or quotes needs no nested-quote gymnastics in the command below.
+  # DAEMON_SESSION_ID tags claude AND every process it spawns (env is inherited). Because it survives
+  # reparenting to PID 1, a background process leaked by a dead/restarted claude is still attributable
+  # to this session — and since the tag propagates to the whole descendant tree, enumerating tagged
+  # PIDs enumerates the entire leak. The reaper (reap_procs) keys off exactly this.
   tmux new-session -d -s "$session" -c "$project_dir" \
     -e "DAEMON_SESSION_NAME=$remote_label" \
+    -e "DAEMON_SESSION_ID=$session_id" \
     "bash -lc 'exec claude $session_flag -n \"\$DAEMON_SESSION_NAME\" $settings_flag'"
 
+  # Record the version this session launched with, so the loop can later detect it's stale and (per
+  # the autoUpdate policy) restart it to adopt a newer on-disk claude.
+  SESSION_VERSIONS["$project_dir"]="$(claude_version)"
+
   echo "Started session: $session ($project_dir) [label: $remote_label]"
+}
+
+# Reap the background processes a daemon session leaked. Anchored on the DAEMON_SESSION_ID env tag
+# (see start_session), so it finds the whole descendant tree even after reparenting to PID 1.
+#   $1 project_dir  — for per-project policy; may no longer exist (daemon.json removed) → safe defaults
+#   $2 session_id   — the tag to match
+#   $3 mode         — "all"  : owner is dead/stopping → kill every tagged process (age ignored)
+#                     "aged" : owner is LIVE          → kill only tagged procs older than maxAgeSeconds
+#
+# Policy comes from daemon.json's reapProcesses block. Defaults: reaping ON (orphan + on-restart),
+# grace 5s, maxAgeSeconds 0 (age-based OFF), no protect list. Every /proc read that fails
+# (permission/race/unreadable age) SKIPS that process — we never signal on an inconclusive read,
+# mirroring the watcher's OOM-safe philosophy. A live claude pane pid is always excluded as
+# defense-in-depth so we can never fratricide a session.
+reap_procs() {
+  local project_dir="$1" sid="$2" mode="$3"
+  local daemon_json="$project_dir/.claude/daemon.json"
+
+  local enabled=true grace=5 max_age=0
+  local -a protect=()
+  if [[ -f "$daemon_json" ]]; then
+    enabled=$(jq -r '(.reapProcesses.enabled)     // true' "$daemon_json" 2>/dev/null || echo true)
+    grace=$(  jq -r '(.reapProcesses.graceSeconds) // 5'   "$daemon_json" 2>/dev/null || echo 5)
+    max_age=$(jq -r '(.reapProcesses.maxAgeSeconds)// 0'   "$daemon_json" 2>/dev/null || echo 0)
+    mapfile -t protect < <(jq -r '.reapProcesses.protect[]? // empty' "$daemon_json" 2>/dev/null || true)
+  fi
+  [[ "$enabled" == "true" ]] || return 0
+  [[ "$grace"   =~ ^[0-9]+$ ]] || grace=5
+  if [[ "$mode" == "aged" ]]; then
+    # Age-based reaping is strictly opt-in: a missing/zero/non-numeric maxAgeSeconds disables it.
+    [[ "$max_age" =~ ^[0-9]+$ ]] && (( max_age > 0 )) || return 0
+  fi
+
+  # Live claude pane pids (across all sessions) — never a reap target. If tmux is unreachable this is
+  # empty; acceptable, because a dead session has no panes and a stopping one is being killed anyway.
+  local live_panes
+  live_panes=" $(tmux list-panes -a -F '#{pane_pid}' 2>/dev/null | tr '\n' ' ') "
+
+  local -a targets=()
+  local environ pid cmdline p skip age
+  for environ in /proc/[0-9]*/environ; do
+    pid="${environ#/proc/}"; pid="${pid%/environ}"
+    # Exact-match the tag as a NUL-delimited env entry. Unreadable environ (other users / race) → skip.
+    grep -qz "^DAEMON_SESSION_ID=${sid}\$" "$environ" 2>/dev/null || continue
+    [[ "$live_panes" == *" $pid "* ]] && continue
+    if [[ "$mode" == "aged" ]]; then
+      age=$(ps -o etimes= -p "$pid" 2>/dev/null | tr -d ' ')
+      [[ "$age" =~ ^[0-9]+$ ]] || continue          # unreadable age → inconclusive → skip
+      (( age >= max_age )) || continue
+    fi
+    if ((${#protect[@]})); then
+      cmdline=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)
+      skip=false
+      for p in "${protect[@]}"; do
+        [[ -n "$p" && "$cmdline" =~ $p ]] && { skip=true; break; }
+      done
+      $skip && continue
+    fi
+    targets+=("$pid")
+  done
+
+  ((${#targets[@]})) || return 0
+  echo "Reaping ${#targets[@]} leaked proc(s) [$mode] for session ${sid:0:8}"
+  kill -TERM "${targets[@]}" 2>/dev/null || true
+  sleep "$grace"
+  local -a survivors=()
+  for pid in "${targets[@]}"; do
+    kill -0 "$pid" 2>/dev/null && survivors+=("$pid")
+  done
+  if ((${#survivors[@]})); then
+    echo "SIGKILL ${#survivors[@]} survivor(s) for session ${sid:0:8}"
+    kill -KILL "${survivors[@]}" 2>/dev/null || true
+  fi
 }
 
 stop_session() {
@@ -110,8 +242,17 @@ stop_session() {
   fi
 
   tmux kill-session -t "$session" 2>/dev/null || true
+
+  # The claude we just killed reparents its background procs to PID 1 (they keep the DAEMON_SESSION_ID
+  # tag). Reap them now — synchronously and BEFORE any restart — so a daemon.json-change restart, a
+  # manual stop, or a daemon.json removal all clean up the old session's leaks. reap_procs returns
+  # immediately when there's nothing tagged, so a normal restart with no background work pays no cost.
+  reap_procs "$project_dir" "$(session_id_for "$project_dir")" all
+
   unset "MTIMES[$project_dir]"
   unset "SESSION_NAMES[$project_dir]"
+  unset "ABSENT_STREAK[$project_dir]"
+  unset "SESSION_VERSIONS[$project_dir]"
   echo "Stopped session: $session"
 }
 
@@ -218,6 +359,9 @@ is_plugin_enabled() {
   return 0
 }
 
+# Defer the first `claude update` by one interval so a watcher restart doesn't force an update on boot.
+last_update_epoch="$(date +%s)"
+
 while true; do
   # Data dir deleted → user chose full removal → clean teardown
   if [[ ! -d "$DATA_DIR" ]]; then
@@ -250,6 +394,30 @@ while true; do
     sleep "$POLL_INTERVAL"
     continue
   fi
+
+  # ── Auto-update: keep the claude binary current (global) ────────────────────────────────────────
+  # `claude update` is a single global operation (one binary), so we run it at most once per the
+  # SMALLEST interval among projects that opted in — not once per project. Adopting the new version
+  # (restarting sessions) is handled per project further down, since a running process never upgrades
+  # in place. Nothing to do unless at least one project set autoUpdate.enabled=true.
+  min_update_interval=0
+  while IFS= read -r project_dir; do
+    [[ -z "$project_dir" || ! -d "$project_dir" ]] && continue
+    [[ "$(autoupdate_field "$project_dir" enabled false)" == "true" ]] || continue
+    iv="$(autoupdate_field "$project_dir" intervalMinutes 360)"
+    [[ "$iv" =~ ^[0-9]+$ ]] || iv=360
+    if (( min_update_interval == 0 || iv < min_update_interval )); then min_update_interval=$iv; fi
+  done < "$PROJECTS_FILE"
+
+  now="$(date +%s)"
+  if (( min_update_interval > 0 )) && (( now - last_update_epoch >= min_update_interval * 60 )); then
+    last_update_epoch=$now
+    echo "Running claude update (interval ${min_update_interval}m)..."
+    claude update >/dev/null 2>&1 || echo "claude update failed (will retry next interval)"
+  fi
+
+  # The on-disk version, read once per scan and reused by every project's adoption check below.
+  disk_version="$(claude_version)"
 
   # Check if plugin was uninstalled from ALL projects (entry removed entirely).
   # teardown() is destructive and irreversible (it rm's this unit and exits), so we
@@ -301,6 +469,26 @@ while true; do
       continue
     fi
 
+    # daemon.json presence is the per-project opt-in gate. If it's gone, stop the session and do NOT
+    # bring it back — until a daemon.json reappears, at which point the next scan starts it again. A
+    # brief disappearance (some editors truncate/unlink mid-save) is debounced so it can't bounce the
+    # session: it must stay missing for DAEMON_JSON_ABSENCE_THRESHOLD consecutive scans before we stop.
+    if [[ ! -f "$project_dir/.claude/daemon.json" ]]; then
+      absent_streak=$(( ${ABSENT_STREAK[$project_dir]:-0} + 1 ))
+      ABSENT_STREAK["$project_dir"]=$absent_streak
+      if (( absent_streak < DAEMON_JSON_ABSENCE_THRESHOLD )); then
+        # Grace window — keep a running session alive (mark ACTIVE so the unregistered-sweep below
+        # leaves it be); just don't start or restart it this scan.
+        [[ -n "${MTIMES[$project_dir]:-}" ]] && ACTIVE["$project_dir"]=1
+        echo "daemon.json missing: $project_dir (${absent_streak}/${DAEMON_JSON_ABSENCE_THRESHOLD}); deferring stop"
+      elif [[ -n "${MTIMES[$project_dir]:-}" ]]; then
+        echo "daemon.json removed: $project_dir (confirmed ${absent_streak}x) — stopping session"
+        stop_session "$project_dir"
+      fi
+      continue
+    fi
+    ABSENT_STREAK["$project_dir"]=0
+
     ACTIVE["$project_dir"]=1
     active_count=$((active_count + 1))
 
@@ -319,6 +507,26 @@ while true; do
         echo "daemon.json changed: $project_dir"
         stop_session "$project_dir"
         start_session "$project_dir"
+      fi
+
+      # Adopt a newer claude version. A running process never upgrades in place, so when the on-disk
+      # version differs from what this session launched with, restart it (history-preserving via
+      # --resume) per the autoUpdate.restart policy. Skipped if the mtime restart above already
+      # relaunched it (SESSION_VERSIONS is now disk_version) or the version is unknown (empty).
+      if [[ "$(autoupdate_field "$project_dir" enabled false)" == "true" ]]; then
+        restart_policy="$(autoupdate_field "$project_dir" restart when-idle)"
+        sess_version="${SESSION_VERSIONS[$project_dir]:-}"
+        if [[ "$restart_policy" != "never" && -n "$disk_version" && -n "$sess_version" \
+              && "$disk_version" != "$sess_version" ]]; then
+          if [[ "$restart_policy" == "immediate" ]] \
+             || session_idle "$project_dir" "$(autoupdate_field "$project_dir" idleMinutes 5)"; then
+            echo "Adopting claude $sess_version → $disk_version: $project_dir"
+            stop_session "$project_dir"
+            start_session "$project_dir"
+          else
+            echo "claude update pending ($sess_version → $disk_version), session busy: $project_dir"
+          fi
+        fi
       fi
     else
       # Not tracked as running. After a watcher restart the tmux session may already exist under its
@@ -349,5 +557,48 @@ while true; do
   done
 
   unset ACTIVE
+
+  # ── Periodic leaked-process sweep (every ~SWEEP_EVERY polls ≈ 60s) ──────────────────────────────
+  # stop_session already reaps on graceful stops/restarts. This catches the cases that never reach it:
+  # a claude that crashed or was OOM-killed leaves tagged orphans behind. It also drives opt-in
+  # age-based reaping on still-live sessions. Orphan reaping waits ORPHAN_SWEEP_THRESHOLD consecutive
+  # dead sweeps so a transient tmux failure can't be mistaken for "the session died".
+  sweep_counter=$(( sweep_counter + 1 ))
+  if (( sweep_counter % SWEEP_EVERY == 0 )); then
+    declare -A SID_TO_PROJECT LIVE_SIDS
+    while IFS= read -r project_dir; do
+      [[ -z "$project_dir" || ! -d "$project_dir" ]] && continue
+      sid="$(session_id_for "$project_dir")"
+      SID_TO_PROJECT["$sid"]="$project_dir"
+      known="${SESSION_NAMES[$project_dir]:-}"
+      [[ -z "$known" ]] && known="$(tmux_session_for "$project_dir")"
+      tmux has-session -t "$known" 2>/dev/null && LIVE_SIDS["$sid"]=1
+    done < "$PROJECTS_FILE"
+
+    # Distinct DAEMON_SESSION_IDs present in any process environment right now. Other users' environ is
+    # unreadable, so only our own tagged procs appear — an unreadable file simply drops out.
+    while IFS= read -r sid; do
+      [[ -z "$sid" ]] && continue
+      proj="${SID_TO_PROJECT[$sid]:-}"
+      if [[ -n "${LIVE_SIDS[$sid]:-}" ]]; then
+        DEAD_SWEEPS["$sid"]=0
+        reap_procs "$proj" "$sid" aged          # live owner → only over-age procs (opt-in)
+      else
+        DEAD_SWEEPS["$sid"]=$(( ${DEAD_SWEEPS[$sid]:-0} + 1 ))
+        if (( ${DEAD_SWEEPS[$sid]} >= ORPHAN_SWEEP_THRESHOLD )); then
+          reap_procs "$proj" "$sid" all         # no live owner → orphans, kill every tagged proc
+        fi
+      fi
+    done < <(
+      # grep opens each file itself (its own stderr → /dev/null), so an unreadable /proc entry is
+      # silent. Piping `< "$e"` here instead would leak the shell's redirection error past 2>/dev/null
+      # to journald for every foreign process — hundreds of lines a minute.
+      for e in /proc/[0-9]*/environ; do
+        grep -az '^DAEMON_SESSION_ID=' "$e" 2>/dev/null
+      done | tr '\0' '\n' | sort -u | sed 's/^DAEMON_SESSION_ID=//'
+    )
+    unset SID_TO_PROJECT LIVE_SIDS
+  fi
+
   sleep "$POLL_INTERVAL"
 done

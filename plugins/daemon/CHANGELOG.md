@@ -3,6 +3,98 @@
 All notable changes to the `daemon` plugin are documented here. This project
 follows [Semantic Versioning](https://semver.org/).
 
+## [2.7.0]
+
+### Added
+
+- **Daemon-managed Claude auto-updates.** A `claude` process never upgrades in place — an update lands
+  on disk but the running process keeps its old version until it restarts. Long-lived daemon sessions
+  would therefore stay stale indefinitely. The watcher now closes that gap, governed by an `autoUpdate`
+  block in `daemon.json`:
+
+  ```json
+  {
+    "autoUpdate": {
+      "enabled": false,
+      "intervalMinutes": 360,
+      "restart": "when-idle",
+      "idleMinutes": 5
+    }
+  }
+  ```
+
+  - **Keeps the binary current.** When any project opts in, the watcher runs `claude update` on the
+    smallest configured interval (one global binary, so it runs once — not per project). This works for
+    **all** install methods, not just native installs. The block is **purely additive** — it never
+    disables Claude's own auto-updater; the two coexist without conflict. If you want the daemon to be
+    the *sole* update driver you can optionally add `"env": { "DISABLE_AUTOUPDATER": "1" }` to the same
+    `daemon.json` (don't use `DISABLE_UPDATES`, which blocks `claude update` itself).
+  - **Adopts the new version by restarting.** Each session records the version it launched with; when
+    the on-disk `claude --version` differs, the watcher restarts it (history-preserving via `--resume`,
+    exactly like the `sessionName`/`remoteLabel` live-reload) per the `restart` policy:
+    - `"when-idle"` (default) — restart only once the session's transcript has been quiet for
+      `idleMinutes`, so an in-flight (or remote-controlled) task is never interrupted mid-turn.
+    - `"immediate"` — restart as soon as a newer version is on disk.
+    - `"never"` — keep the binary current but only log that an update is pending; you restart manually.
+  - **Off by default** (`enabled: false`) — updating and restarting are disruptive, so this is opt-in
+    per project. Unknown/unreadable reads fall back to safe defaults and never force a restart.
+
+## [2.6.0]
+
+### Added
+
+- **`daemon.json` presence is now the per-project opt-in gate.** A project is daemonized only when
+  `.claude/daemon.json` exists — so a normal, non-daemon `claude` session can be used in any project
+  that doesn't have the file. Concretely:
+
+  - **`setup.sh` (SessionStart)** exits early when the project has no `.claude/daemon.json`: it neither
+    registers the project nor installs the watcher service. The systemd watcher is therefore installed
+    the first time a session starts in a project that *has* a `daemon.json`, not merely because the
+    plugin is enabled.
+  - **The watcher** notices a `daemon.json` that has been **removed** and **gracefully stops** that
+    project's tmux session — and does **not** bring it back until a `daemon.json` reappears (the next
+    scan restarts it automatically). A brief disappearance (some editors truncate/unlink mid-save) is
+    debounced: the file must be missing for 2 consecutive scans (~20s) before the session is stopped,
+    so an atomic save can't bounce it.
+
+  An empty `{}` `daemon.json` is enough to opt in.
+
+- **Reaping of stuck/lingering background processes Claude started.** Background commands a daemon
+  session spawns (dev servers, `run_in_background` jobs, `nohup … &`) become descendants of the pane's
+  `claude` process. When that `claude` dies or restarts they reparent to PID 1 and leak. The watcher
+  now cleans them up, governed by a `reapProcesses` block in `daemon.json`:
+
+  ```json
+  {
+    "reapProcesses": {
+      "enabled": true,
+      "onRestart": true,
+      "orphans": true,
+      "graceSeconds": 5,
+      "maxAgeSeconds": 0,
+      "protect": ["vite", "node .* dev"]
+    }
+  }
+  ```
+
+  - **How ownership is tracked.** Each session is launched with a `DAEMON_SESSION_ID` env var (the
+    path-derived session UUID). Because environment is inherited, it tags `claude` *and its entire
+    descendant tree*, and it **survives reparenting to PID 1** — so a leaked process is still
+    attributable to its origin session, and enumerating tagged PIDs enumerates the whole leak.
+  - **Orphan reaping (on by default).** On a graceful stop/restart the old session's tagged processes
+    are reaped immediately (synchronously, before any restart). A throttled sweep (~every 60s) also
+    catches sessions that crashed or were OOM-killed without a clean stop — a session must be seen with
+    no live tmux session for 2 consecutive sweeps before its orphans are reaped, so a transient tmux
+    hiccup can't be mistaken for a dead session.
+  - **Age-based reaping (off by default).** Set `maxAgeSeconds > 0` to also kill tagged processes on a
+    *still-live* session once they exceed that age — aggressive, opt-in per project.
+  - **`protect`** — a list of regexes matched against each candidate's `/proc/<pid>/cmdline`; a match
+    spares the process.
+  - **`graceSeconds`** — `SIGTERM`, wait, then `SIGKILL` survivors.
+  - **Safety.** Mirrors the watcher's OOM-safe philosophy: every unreadable `/proc` read skips that
+    process rather than guessing, and a live `claude` pane process is always excluded as
+    defense-in-depth — reaping can never fratricide a session.
+
 ## [2.5.0]
 
 ### Added

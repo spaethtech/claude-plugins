@@ -23,16 +23,23 @@ To prompt collaborators to install, add this to your project's `.claude/settings
 
 ## How It Works
 
-A `SessionStart` hook registers each project with a global watcher service. The watcher manages persistent Claude sessions for all registered projects.
+A `SessionStart` hook registers each project with a global watcher service — **but only if the
+project has a `.claude/daemon.json`**. That file is the opt-in signal: without it, `claude` runs as a
+normal (non-daemon) session and nothing is installed or registered. The watcher manages persistent
+Claude sessions for all registered projects.
 
 ```
-Plugin installed in project
+Project has .claude/daemon.json
   └─ SessionStart hook fires
        └─ setup.sh registers project in ${CLAUDE_PLUGIN_DATA}/projects
             └─ claude-daemon.service (watcher)
                  └─ tmux "<dirname>"
                       └─ claude --resume <derived-uuid> -n <dirname>
 ```
+
+Remove the `daemon.json` and the watcher gracefully stops that project's session on the next scan and
+won't restart it until the file reappears — so you can toggle a project between daemon and plain
+`claude` just by adding or removing the file.
 
 | Derived value | Source |
 |---------------|--------|
@@ -43,11 +50,21 @@ Plugin installed in project
 
 ## Usage
 
-Once the plugin is installed in a project and you've started one Claude session (to trigger the hook), the daemon runs automatically. No other setup needed.
+Add a `.claude/daemon.json` to the project (even an empty `{}`), start one Claude session to trigger
+the hook, and the daemon runs automatically. No other setup needed. Delete the file to turn the daemon
+off for that project.
 
-### Optional: Settings overrides
+### Opt-in: `.claude/daemon.json`
 
-Create `.claude/daemon.json` to override settings for the daemon session only — manual CLI sessions are unaffected:
+`daemon.json` is **required** — its presence is what opts a project into the daemon. An empty object is
+enough:
+
+```json
+{}
+```
+
+Its keys are also merged on top of the project's `.claude/settings.json` for the daemon session only
+(manual CLI sessions are unaffected), so it doubles as a settings-override file:
 
 ```json
 {
@@ -55,8 +72,6 @@ Create `.claude/daemon.json` to override settings for the daemon session only �
   "tui": "fullscreen"
 }
 ```
-
-This file is optional. Without it, the daemon uses the project's standard `.claude/settings.json`.
 
 #### Naming the session
 
@@ -88,6 +103,76 @@ reopens the **same conversation** under the new name/label. You lose nothing but
 ### Live Reload
 
 The watcher checks `daemon.json` modification times every 10 seconds. Edit the file and the session restarts automatically.
+
+### Reaping stuck background processes
+
+Background commands a daemon session starts — dev servers, `run_in_background` jobs, `nohup … &` —
+run as children of the session's `claude` process. If that `claude` dies or restarts, they reparent to
+PID 1 and leak. The watcher reaps them, governed by a `reapProcesses` block in `daemon.json`:
+
+```json
+{
+  "reapProcesses": {
+    "enabled": true,
+    "onRestart": true,
+    "orphans": true,
+    "graceSeconds": 5,
+    "maxAgeSeconds": 0,
+    "protect": ["vite", "node .* dev"]
+  }
+}
+```
+
+| Key | Default | Meaning |
+|-----|---------|---------|
+| `enabled` | `true` | Master switch for this project's reaping |
+| `orphans` / `onRestart` | `true` | Kill the session's leaked processes on a stop/restart and via a periodic sweep — the safe default (nothing live owns them) |
+| `maxAgeSeconds` | `0` (off) | If `> 0`, also kill tagged processes on a **live** session once older than this — aggressive, opt-in |
+| `graceSeconds` | `5` | `SIGTERM`, wait, then `SIGKILL` survivors |
+| `protect` | — | Regexes matched against `/proc/<pid>/cmdline`; a match spares the process |
+
+**How it knows which processes are Claude's.** Each session is launched with a `DAEMON_SESSION_ID` env
+var. Environment is inherited, so it tags `claude` and every process it spawns, and it survives
+reparenting to PID 1 — so a leaked process stays attributable to its origin session even after its
+`claude` is gone. Reaping only ever targets a session with no live `claude`; a live session's
+background work is left alone (that's `claude`'s to manage). Every unreadable `/proc` read is skipped
+rather than guessed, and live `claude` processes are always excluded — reaping can't kill a session.
+
+### Auto-updating Claude
+
+A running `claude` process never upgrades in place — an update lands on disk but the running process
+keeps its old version until it exits. A daemon session that runs for days would stay stale forever. The
+watcher fixes this via an `autoUpdate` block in `daemon.json` (**off by default** — opt in per project):
+
+```json
+{
+  "autoUpdate": {
+    "enabled": true,
+    "intervalMinutes": 360,
+    "restart": "when-idle",
+    "idleMinutes": 5
+  }
+}
+```
+
+| Key | Default | Meaning |
+|-----|---------|---------|
+| `enabled` | `false` | Opt this project into daemon-managed updates |
+| `intervalMinutes` | `360` | How often the watcher runs `claude update`. It's one global binary, so the watcher updates once per the smallest interval across opted-in projects — not per project |
+| `restart` | `"when-idle"` | How to adopt a newer on-disk version: `when-idle` (restart once the session's transcript has been quiet for `idleMinutes`), `immediate` (restart as soon as it's available), or `never` (log only; restart manually) |
+| `idleMinutes` | `5` | Quiet threshold for `when-idle` |
+
+The watcher runs `claude update` (works for **all** install methods, not just native), then restarts
+each session whose launched version differs from what's now on disk. Restart is history-preserving
+(`--resume`, path-derived session ID), so you lose nothing but a brief blip. `when-idle` avoids
+interrupting an in-flight or remote-controlled task mid-turn.
+
+This block is **purely additive** — it never disables Claude's own auto-updater. It just adds the two
+pieces a long-running session otherwise lacks: proactively pulling updates (which matters because a
+running process never self-updates in place) and restarting to adopt them. If you'd rather the daemon
+be the *sole* update driver, you can *optionally* add `"env": { "DISABLE_AUTOUPDATER": "1" }` to make it
+the single source of update timing — but leaving Claude's auto-updater on is fine and they coexist
+without conflict. (Don't use `DISABLE_UPDATES`, which blocks `claude update` itself.)
 
 ## Session Persistence
 
@@ -132,12 +217,12 @@ systemctl --user daemon-reload
 
 ## Notes
 
-- **Auto-discovery**: Install the plugin in a project, start a session — daemon runs
+- **Opt-in via `daemon.json`**: A project is daemonized only if it has `.claude/daemon.json` (empty `{}` is enough); remove the file to turn the daemon off and fall back to plain `claude`
 - **Auto-restart**: If Claude exits, the watcher restarts its session on the next scan
+- **Leak cleanup**: Background processes a dead/restarted session left behind are reaped (see [Reaping stuck background processes](#reaping-stuck-background-processes))
 - **Linger**: Service runs even when logged out
 - **Remote control**: Add `"remoteControlAtStartup": true` to daemon.json, connect from claude.ai/code
 - **Multiple projects**: Each gets its own tmux session and Claude session — no conflicts
-- **Settings optional**: `daemon.json` is only needed for overrides, not for opt-in
 - **Crash-safe teardown**: The watcher only removes its own systemd unit after confirming the plugin is absent from every registered project across several consecutive scans (~30s). A settings file that can't be read (e.g. a `grep` killed under memory pressure) is treated as *inconclusive* and never triggers removal — so transient OOM can't make the daemon delete itself.
 
 ## Known Limitations

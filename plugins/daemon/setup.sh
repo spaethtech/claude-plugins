@@ -5,6 +5,14 @@ PLUGIN_DIR="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}
 DATA_DIR="${CLAUDE_PLUGIN_DATA:-$PLUGIN_DIR/.data}"
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(pwd)}"
 
+# daemon.json presence is the opt-in gate. Without it, this is a normal (non-daemon) Claude
+# session: don't install the watcher service and don't register the project. This runs on EVERY
+# SessionStart, so a project only ever gets daemonized once it has a .claude/daemon.json — and the
+# watcher service itself is only installed the first time a session starts in such a project.
+if [[ ! -f "$PROJECT_DIR/.claude/daemon.json" ]]; then
+  exit 0
+fi
+
 mkdir -p "$DATA_DIR"
 
 # Install or update the watcher service when plugin version changes

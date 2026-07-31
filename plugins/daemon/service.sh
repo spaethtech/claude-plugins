@@ -46,6 +46,9 @@ sweep_counter=0
 # Epoch of the last `claude update` run. Initialised in-loop to defer the first update by one interval
 # (so a watcher restart doesn't trigger an immediate update every time).
 last_update_epoch=0
+# Epoch of the last keep-alive token check. 0 = check immediately on start, so a watcher restart
+# recovers a just-idled token right away.
+last_keepalive_epoch=0
 
 session_id_for() {
   echo -n "$1" | sha256sum | \
@@ -101,6 +104,13 @@ autoupdate_field() {
   local dj="$1/.claude/daemon.json" field="$2" default="$3"
   [[ -f "$dj" ]] || { echo "$default"; return; }
   jq -r "(.autoUpdate.$field) // \"$default\"" "$dj" 2>/dev/null || echo "$default"
+}
+
+# Read a field from a project's keepAlive block, echoing $3 when the file/key is missing or unreadable.
+keepalive_field() {
+  local dj="$1/.claude/daemon.json" field="$2" default="$3"
+  [[ -f "$dj" ]] || { echo "$default"; return; }
+  jq -r "(.keepAlive.$field) // \"$default\"" "$dj" 2>/dev/null || echo "$default"
 }
 
 # True when a session is quiet — its transcript hasn't been written for >= idle_min minutes. Used to
@@ -525,6 +535,50 @@ while true; do
 
   # The on-disk version, read once per scan and reused by every project's adoption check below.
   disk_version="$(claude_version)"
+
+  # ── Keep-alive: refresh the OAuth token before its idle window lapses (global) ───────────────────
+  # Credentials live in ONE per-user file shared by every session, so this is a single global action:
+  # if ANY opted-in project sets keepAlive, run it. A `claude` process only refreshes its token when it
+  # makes a request near/after access-token expiry; an idle daemon never does, so once the refresh
+  # token's idle window lapses you're forced to /login — which breaks remote control. Firing a trivial
+  # `claude -p` once the access token has expired triggers the reactive refresh and rotates the shared
+  # refresh token, keeping every session authenticated. Only meaningful for a claudeAiOauth login
+  # (Pro/Max); API-key auth has no expiry, so expiresAt is absent → acc=0 → skipped.
+  ka_enabled=false
+  ka_interval=30
+  while IFS= read -r project_dir; do
+    [[ -z "$project_dir" || ! -d "$project_dir" ]] && continue
+    [[ "$(keepalive_field "$project_dir" enabled false)" == "true" ]] || continue
+    ka_enabled=true
+    iv="$(keepalive_field "$project_dir" checkEveryMinutes 30)"
+    [[ "$iv" =~ ^[0-9]+$ ]] || iv=30
+    (( iv < ka_interval )) && ka_interval=$iv
+  done < "$PROJECTS_FILE"
+
+  now="$(date +%s)"
+  if $ka_enabled && (( now - last_keepalive_epoch >= ka_interval * 60 )); then
+    last_keepalive_epoch=$now
+    cred="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.credentials.json"
+    if [[ -f "$cred" ]]; then
+      acc=$(( $(jq -r '.claudeAiOauth.expiresAt // 0' "$cred" 2>/dev/null || echo 0) / 1000 ))
+      rt_before="$(jq -r '.claudeAiOauth.refreshTokenExpiresAt // 0' "$cred" 2>/dev/null || echo 0)"
+      # Only fire once the access token is at/just past expiry — a request before then won't refresh.
+      if (( acc > 0 && now >= acc - 300 )); then
+        echo "keep-alive: access token expiring/expired — refreshing OAuth token"
+        ka_out="$(cd "$HOME" && timeout 90 claude -p 'Reply with only: ok' 2>&1)"; ka_rc=$?
+        rt_after="$(jq -r '.claudeAiOauth.refreshTokenExpiresAt // 0' "$cred" 2>/dev/null || echo 0)"
+        if (( ka_rc == 124 )); then
+          echo "keep-alive: refresh request timed out (possible idle-hang); will retry next check"
+        elif (( ka_rc != 0 )); then
+          echo "keep-alive: refresh request FAILED (exit $ka_rc) — refresh token may be dead; manual /login likely needed"
+        elif [[ "$rt_after" != "$rt_before" ]]; then
+          echo "keep-alive: refresh token rotated ($rt_before → $rt_after) — auth extended"
+        else
+          echo "keep-alive: request ok but refresh token did not advance (possible refresh bug; watch for re-login)"
+        fi
+      fi
+    fi
+  fi
 
   # Check if plugin was uninstalled from ALL projects (entry removed entirely).
   # teardown() is destructive and irreversible (it rm's this unit and exits), so we

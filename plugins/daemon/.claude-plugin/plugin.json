@@ -1,10 +1,10 @@
 {
   "name": "daemon",
-  "version": "2.9.0",
-  "description": "Run Claude Code as a persistent systemd user service via tmux — auto-restarts on crash, survives logout, remote-controllable from claude.ai. Opt in per project with a .claude/daemon.json (sessionName/remoteLabel naming, settings overrides). Reaps leaked/orphaned background processes the session spawned, optionally kills stalled/hung ones, and keeps Claude current by running `claude update` and restarting idle sessions to adopt the new version.",
+  "version": "2.10.0",
+  "description": "Run Claude Code as a persistent systemd user service via tmux — auto-restarts on crash, survives logout, remote-controllable from claude.ai. Opt in per project with a .claude/daemon.json (sessionName/remoteLabel naming, settings overrides). Reaps leaked/orphaned background processes the session spawned, optionally kills stalled/hung ones, keeps Claude current by running `claude update` and restarting idle sessions to adopt it, and keeps OAuth auth alive so remote control survives long idle periods without re-login.",
   "author": {
     "name": "SpaethTech"
   },
-  "keywords": ["daemon", "systemd", "tmux", "session", "remote-control", "persistent", "auto-update", "process-reaping", "cleanup"],
+  "keywords": ["daemon", "systemd", "tmux", "session", "remote-control", "persistent", "auto-update", "process-reaping", "cleanup", "keep-alive"],
   "license": "MIT"
 }

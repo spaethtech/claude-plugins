@@ -211,6 +211,45 @@ be the *sole* update driver, you can *optionally* add `"env": { "DISABLE_AUTOUPD
 the single source of update timing — but leaving Claude's auto-updater on is fine and they coexist
 without conflict. (Don't use `DISABLE_UPDATES`, which blocks `claude update` itself.)
 
+### Keeping remote control authenticated
+
+A Claude Pro/Max OAuth login (`/login`) refreshes its token only when the `claude` process makes a
+request near/after the access token's expiry. An **idle** daemon makes no requests, so after the refresh
+token's idle window lapses (a few days) you're forced to `/login` again — which silently breaks remote
+control. Remote control *requires* OAuth, and the long-lived-token alternatives (`claude setup-token`,
+API keys) don't support remote control, so a keep-alive is the way to hold the session open:
+
+```json
+{
+  "keepAlive": {
+    "enabled": true,
+    "checkEveryMinutes": 30
+  }
+}
+```
+
+| Key | Default | Meaning |
+|-----|---------|---------|
+| `enabled` | `false` | Opt in per project. Credentials are one per-user file shared by every session, so a single keep-alive covers all your daemon sessions; if several opt in, the smallest `checkEveryMinutes` wins |
+| `checkEveryMinutes` | `30` | How often the watcher checks the token's `expiresAt` |
+
+The watcher only actually refreshes once the access token is within ~5 min of expiry — firing earlier
+is a no-op (a request won't rotate the token until it's near/past expiry), so it makes at most ~3 trivial
+`claude -p` requests a day while idle. Each refresh **rotates the shared refresh token**, extending the
+idle window for every session.
+
+**It's best-effort and self-verifying.** Known refresh-token bugs mean a refresh can occasionally not
+take, so every attempt logs its outcome to journald (prefix `keep-alive:`) — rotated (success), ok but
+not advanced (possible bug), failed (refresh token likely dead → manual `/login`), or timed out. Watch
+it with:
+
+```bash
+journalctl --user -u claude-daemon -f | grep keep-alive
+```
+
+Only applies to a `claudeAiOauth` login on Linux (the credential file). API-key auth has no expiry, and
+macOS keeps credentials in Keychain rather than a file — both are skipped safely.
+
 ## Session Persistence
 
 The session ID is a deterministic UUID derived from the project's absolute path. Restarts always resume the same conversation — no state files needed. First run creates the session, subsequent runs resume it.

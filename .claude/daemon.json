@@ -1,5 +1,15 @@
 {
   "remoteControlAtStartup": true,
   "sessionName": "claude-plugins",
-  "remoteLabel": "claude-plugins"
+  "remoteLabel": "claude-plugins",
+  "autoUpdate": {
+    "enabled": true,
+    "intervalMinutes": 360,
+    "restart": "when-idle",
+    "idleMinutes": 5
+  },
+  "keepAlive": {
+    "enabled": true,
+    "checkEveryMinutes": 30
+  }
 }

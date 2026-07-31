@@ -3,6 +3,44 @@
 All notable changes to the `daemon` plugin are documented here. This project
 follows [Semantic Versioning](https://semver.org/).
 
+## [2.10.0]
+
+### Added
+
+- **OAuth keep-alive** (`keepAlive`) — keeps remote control alive across long idle periods without a
+  forced `/login`. A Claude Pro/Max OAuth login refreshes its token only when the process makes a
+  request near/after access-token expiry; an idle daemon never does, so once the refresh token's idle
+  window lapses (a few days) you must re-authenticate — which breaks remote control. The watcher now
+  fires a trivial `claude -p` once the access token has expired, triggering the reactive refresh and
+  rotating the shared refresh token, keeping every session authenticated.
+
+  ```json
+  {
+    "keepAlive": {
+      "enabled": true,
+      "checkEveryMinutes": 30
+    }
+  }
+  ```
+
+  - **`enabled`** (default `false`) — opt-in per project. Credentials live in one per-user file shared
+    by every session, so a single keep-alive covers all daemon sessions at once; if multiple projects
+    opt in, the **smallest** `checkEveryMinutes` wins.
+  - **`checkEveryMinutes`** (default `30`) — how often the watcher checks `expiresAt`. It only actually
+    refreshes once the access token is within ~5 min of expiry (firing earlier is a no-op — a request
+    won't rotate the token until it's near/past expiry), so at most ~3 trivial requests a day while idle.
+  - **Self-verifying via journald.** Each attempt logs the outcome (prefix `keep-alive:`): token rotated
+    (success), request ok but token didn't advance (possible refresh bug — watch for re-login), request
+    failed (refresh token likely dead — manual `/login` needed), or timed out. Watch with
+    `journalctl --user -u claude-daemon -f | grep keep-alive`.
+  - **Scope.** Only meaningful for a `claudeAiOauth` login on Linux (the credential file); API-key auth
+    has no expiry (skipped), and macOS stores credentials in Keychain rather than a file.
+
+### Changed
+
+- Refactored process enumeration/grace-kill helpers are now joined by `keepalive_field` for reading the
+  new block, mirroring `autoupdate_field`.
+
 ## [2.9.0]
 
 ### Changed

@@ -1,6 +1,6 @@
 {
   "name": "daemon",
-  "version": "2.8.0",
+  "version": "2.9.0",
   "description": "Run Claude Code as a persistent systemd user service via tmux. Auto-restarts on crash, survives logout. Names the tmux session after the project directory (override with sessionName) and the Claude display label with remoteLabel in daemon.json.",
   "author": {
     "name": "SpaethTech"

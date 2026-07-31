@@ -117,7 +117,7 @@ PID 1 and leak. The watcher reaps them, governed by a `reapProcesses` block in `
     "onRestart": true,
     "orphans": true,
     "graceSeconds": 5,
-    "maxAgeSeconds": 0,
+    "maxAgeSeconds": 3600,
     "protect": ["vite", "node .* dev"]
   }
 }
@@ -127,7 +127,7 @@ PID 1 and leak. The watcher reaps them, governed by a `reapProcesses` block in `
 |-----|---------|---------|
 | `enabled` | `true` | Master switch for this project's reaping |
 | `orphans` / `onRestart` | `true` | Kill the session's leaked processes on a stop/restart and via a periodic sweep — the safe default (nothing live owns them) |
-| `maxAgeSeconds` | `0` (off) | If `> 0`, also kill tagged processes on a **live** session once older than this — aggressive, opt-in |
+| `maxAgeSeconds` | `3600` (1h) | Age-based reaping on a **live** session — kill tagged processes older than this. Sensible ceiling that catches leaked children (dev servers, headless browsers, unattended `run_in_background` jobs) without touching short-lived work. Set to `0` to disable age-based reaping entirely; add long-lived processes to `protect` (e.g. persistent MCP daemons) so they survive. |
 | `graceSeconds` | `5` | `SIGTERM`, wait, then `SIGKILL` survivors |
 | `protect` | — | Regexes matched against `/proc/<pid>/cmdline`; a match spares the process |
 

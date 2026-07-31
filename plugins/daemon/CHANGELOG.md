@@ -3,6 +3,30 @@
 All notable changes to the `daemon` plugin are documented here. This project
 follows [Semantic Versioning](https://semver.org/).
 
+## [2.9.0]
+
+### Changed
+
+- **`reapProcesses.maxAgeSeconds` default is now `3600` (was `0` / off).** Age-based reaping
+  on a live session now fires by default for tagged processes older than 1h — the ceiling
+  that catches everything you actually want reaped (leaked headless browsers, forgotten
+  `run_in_background` dev servers, unattended pytest suites) without touching short-lived
+  work. Prior default silently left leaked processes running indefinitely; the reaping
+  code was in place but the age threshold made it a no-op unless the user opted in via
+  `daemon.json`, and few projects did — including the ones that most needed it.
+
+  **Migration.** Projects that rely on tagged processes lasting more than 1h on a live
+  session need to either:
+  - raise `reapProcesses.maxAgeSeconds` explicitly (e.g. `86400` for 24h), or
+  - add the process's cmdline pattern to `reapProcesses.protect` (e.g. persistent MCP
+    daemons that the session intentionally keeps alive across long spans), or
+  - set `reapProcesses.maxAgeSeconds: 0` to opt out of age-based reaping entirely
+    (orphan reaping on session stop/restart still applies).
+
+  If your current `daemon.json` doesn't set `maxAgeSeconds`, you now get 1h reaping
+  automatically. Verify your project's long-lived processes appear in `protect` before
+  the first live-session sweep after upgrading.
+
 ## [2.8.0]
 
 ### Added

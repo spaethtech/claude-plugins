@@ -207,18 +207,21 @@ reap_procs() {
   local project_dir="$1" sid="$2" mode="$3"
   local daemon_json="$project_dir/.claude/daemon.json"
 
-  local enabled=true grace=5 max_age=0
+  local enabled=true grace=5 max_age=3600
   local -a protect=()
   if [[ -f "$daemon_json" ]]; then
     enabled=$(jq -r '(.reapProcesses.enabled)     // true' "$daemon_json" 2>/dev/null || echo true)
     grace=$(  jq -r '(.reapProcesses.graceSeconds) // 5'   "$daemon_json" 2>/dev/null || echo 5)
-    max_age=$(jq -r '(.reapProcesses.maxAgeSeconds)// 0'   "$daemon_json" 2>/dev/null || echo 0)
+    max_age=$(jq -r '(.reapProcesses.maxAgeSeconds)// 3600' "$daemon_json" 2>/dev/null || echo 3600)
     mapfile -t protect < <(jq -r '.reapProcesses.protect[]? // empty' "$daemon_json" 2>/dev/null || true)
   fi
   [[ "$enabled" == "true" ]] || return 0
   [[ "$grace"   =~ ^[0-9]+$ ]] || grace=5
   if [[ "$mode" == "aged" ]]; then
-    # Age-based reaping is strictly opt-in: a missing/zero/non-numeric maxAgeSeconds disables it.
+    # Age-based reaping is now ON by default at 1h — sensible ceiling
+    # that catches leaked children (dev servers, headless browsers,
+    # unattended `run_in_background` jobs) without touching short-lived
+    # work. Explicit 0 disables age-based reaping entirely.
     [[ "$max_age" =~ ^[0-9]+$ ]] && (( max_age > 0 )) || return 0
   fi
 

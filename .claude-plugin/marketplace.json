@@ -10,7 +10,7 @@
     {
       "name": "daemon",
       "source": "./plugins/daemon",
-      "description": "Run Claude Code as a persistent systemd user service via tmux",
+      "description": "Persistent Claude Code sessions as a systemd/tmux service — auto-restart, logout-survival, remote control, leaked/stalled background-process cleanup, and self-updating sessions",
       "category": "toolkit"
     }
   ]

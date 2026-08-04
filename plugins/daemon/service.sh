@@ -156,6 +156,19 @@ start_session() {
   # recomputed name) before starting the renamed one — see the reload loop.
   SESSION_NAMES["$project_dir"]="$session"
 
+  # When docker container reaping is enabled, prepend our docker shim dir to the session's PATH so
+  # `docker run`/`compose run` get stamped with the session's ownership label (see shim/docker and
+  # reap_containers). Scoped to this feature: without it, PATH is untouched and no shim runs. PATH is
+  # exported INSIDE the login shell (after profile sourcing, which can reset PATH) so the shim wins;
+  # DAEMON_SHIM_DIR carries the dir in, and $PATH there is the login shell's own, both deferred.
+  local inner="exec claude $session_flag -n \"\$DAEMON_SESSION_NAME\" $settings_flag"
+  local -a extra_env=()
+  if [[ -f "$daemon_json" ]] && \
+     [[ "$(jq -r '(.reapProcesses.docker.enabled) // false' "$daemon_json" 2>/dev/null || echo false)" == "true" ]]; then
+    extra_env=(-e "DAEMON_SHIM_DIR=$PLUGIN_DIR/shim")
+    inner="export PATH=\"\$DAEMON_SHIM_DIR:\$PATH\"; $inner"
+  fi
+
   # The display label is passed through a tmux session env var (`-e`) and expanded at the innermost
   # shell, so a label with spaces or quotes needs no nested-quote gymnastics in the command below.
   # DAEMON_SESSION_ID tags claude AND every process it spawns (env is inherited). Because it survives
@@ -165,7 +178,8 @@ start_session() {
   tmux new-session -d -s "$session" -c "$project_dir" \
     -e "DAEMON_SESSION_NAME=$remote_label" \
     -e "DAEMON_SESSION_ID=$session_id" \
-    "bash -lc 'exec claude $session_flag -n \"\$DAEMON_SESSION_NAME\" $settings_flag'"
+    "${extra_env[@]}" \
+    "bash -lc '$inner'"
 
   # Record the version this session launched with, so the loop can later detect it's stale and (per
   # the autoUpdate policy) restart it to adopt a newer on-disk claude.
@@ -348,6 +362,73 @@ detect_stalled_for_session() {
   for dead in "${kill_list[@]}"; do unset "PROC_STALL[$dead]" "PROC_CPU[$dead]"; done
 }
 
+# Reap Docker containers a daemon session leaked. Our /proc tag reaper is structurally blind to
+# containers: `docker run` hands the workload to dockerd, so the container process is a child of
+# containerd-shim with a FRESH environment — it never carries DAEMON_SESSION_ID. Instead we rely on the
+# docker shim (see shim/docker) having stamped `--label claude.daemon.session=<sid>` at launch, and
+# filter on exactly that. This is the same firewall as the process reaper: we only ever remove
+# containers WE labeled for THIS session — compose containers (labelled com.docker.compose.*) and
+# user-started containers lack our label and are never matched.
+#   $1 project_dir  — for per-project policy
+#   $2 session_id   — the label value to match
+#   $3 mode         — "all"  : owner dead/stopping → remove every labeled container (age ignored)
+#                     "aged" : owner LIVE          → remove only labeled containers older than maxAge
+#
+# Opt-in via reapProcesses.docker.enabled (default false). Every `docker` call is timeout-wrapped: a
+# wedged dockerd (the exact incident failure mode) must not hang the watcher. Unreadable/failed docker
+# reads skip that container rather than guess.
+reap_containers() {
+  local project_dir="$1" sid="$2" mode="$3"
+  local dj="$project_dir/.claude/daemon.json"
+  [[ -f "$dj" ]] || return 0
+  [[ "$(jq -r '(.reapProcesses.docker.enabled) // false' "$dj" 2>/dev/null || echo false)" == "true" ]] || return 0
+  command -v docker >/dev/null 2>&1 || return 0
+
+  local max_age
+  # Container age threshold: a docker-specific override, else the shared process maxAgeSeconds, else 1h.
+  max_age=$(jq -r '(.reapProcesses.docker.maxAgeSeconds) // (.reapProcesses.maxAgeSeconds) // 3600' "$dj" 2>/dev/null || echo 3600)
+  [[ "$max_age" =~ ^[0-9]+$ ]] || max_age=3600
+  # Consistent with reap_procs: maxAgeSeconds 0 DISABLES age-based reaping (it does NOT mean "reap
+  # everything at age 0"). Teardown/dead reaping (mode=all) ignores age and is unaffected.
+  [[ "$mode" == "aged" ]] && (( max_age == 0 )) && return 0
+  local -a protect=()
+  mapfile -t protect < <(jq -r '.reapProcesses.docker.protect[]? // empty' "$dj" 2>/dev/null || true)
+
+  # All containers (running OR stopped — a non---rm `compose run` leaves stopped leftovers) this session
+  # labeled. timeout guards against an unresponsive dockerd wedging the loop.
+  local ids
+  ids=$(timeout 10 docker ps -aq --filter "label=claude.daemon.session=$sid" 2>/dev/null) || return 0
+  [[ -z "$ids" ]] && return 0
+
+  local -a targets=()
+  local id info name image started st_epoch now p skip rest
+  now=$(date +%s)
+  while IFS= read -r id; do
+    [[ -z "$id" ]] && continue
+    info=$(timeout 10 docker inspect -f '{{.Name}}|{{.Config.Image}}|{{.State.StartedAt}}' "$id" 2>/dev/null) || continue
+    name=${info%%|*}; rest=${info#*|}; image=${rest%%|*}; started=${rest##*|}
+    name=${name#/}
+    if ((${#protect[@]})); then
+      skip=false
+      for p in "${protect[@]}"; do
+        [[ -n "$p" && ( "$name" =~ $p || "$image" =~ $p ) ]] && { skip=true; break; }
+      done
+      $skip && continue
+    fi
+    if [[ "$mode" == "aged" ]]; then
+      st_epoch=$(date -d "$started" +%s 2>/dev/null) || continue   # unparseable start → skip (inconclusive)
+      (( now - st_epoch >= max_age )) || continue
+    fi
+    targets+=("$id")
+  done <<< "$ids"
+
+  ((${#targets[@]})) || return 0
+  echo "Reaping ${#targets[@]} leaked container(s) [$mode] for session ${sid:0:8}"
+  # `docker rm -f` stops (SIGKILL) then removes; --rm containers are cleaned up the same way. One call,
+  # timeout-guarded. A failure just logs — next sweep retries.
+  timeout 30 docker rm -f "${targets[@]}" >/dev/null 2>&1 || echo "docker rm -f failed/timed out for session ${sid:0:8}"
+}
+
 stop_session() {
   local project_dir="$1"
   # Kill the session under the name it was actually STARTED with (tracked), so a mid-session
@@ -365,6 +446,9 @@ stop_session() {
   # manual stop, or a daemon.json removal all clean up the old session's leaks. reap_procs returns
   # immediately when there's nothing tagged, so a normal restart with no background work pays no cost.
   reap_procs "$project_dir" "$(session_id_for "$project_dir")" all
+  # Same for any Docker containers this session launched — they don't carry the /proc tag, so they'd
+  # otherwise survive the session (the incident). Self-gates on reapProcesses.docker.enabled.
+  reap_containers "$project_dir" "$(session_id_for "$project_dir")" all
 
   unset "MTIMES[$project_dir]"
   unset "SESSION_NAMES[$project_dir]"
@@ -734,7 +818,17 @@ while true; do
       SID_TO_PROJECT["$sid"]="$project_dir"
       known="${SESSION_NAMES[$project_dir]:-}"
       [[ -z "$known" ]] && known="$(tmux_session_for "$project_dir")"
-      tmux has-session -t "$known" 2>/dev/null && LIVE_SIDS["$sid"]=1
+      if tmux has-session -t "$known" 2>/dev/null; then
+        LIVE_SIDS["$sid"]=1
+        # Live session → age-reap its over-age containers (catches the incident: a hung container whose
+        # bash launcher was already reaped, while the session itself stayed alive).
+        reap_containers "$project_dir" "$sid" aged
+      else
+        # Dead session → remove all its labeled containers. Driven from the project list (not the /proc
+        # sid scan) so a session that crashed leaving ONLY a container — no tagged processes to appear in
+        # /proc — still gets its container cleaned up. Self-gates on reapProcesses.docker.enabled.
+        reap_containers "$project_dir" "$sid" all
+      fi
     done < "$PROJECTS_FILE"
 
     # Distinct DAEMON_SESSION_IDs present in any process environment right now. Other users' environ is

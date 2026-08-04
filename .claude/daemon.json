@@ -11,5 +11,10 @@
   "keepAlive": {
     "enabled": true,
     "checkEveryMinutes": 30
+  },
+  "reapProcesses": {
+    "docker": {
+      "enabled": true
+    }
   }
 }

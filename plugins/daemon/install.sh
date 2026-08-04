@@ -37,6 +37,7 @@ fi
 
 mkdir -p "$SYSTEMD_USER_DIR" "$DATA_DIR"
 chmod +x "$PLUGIN_DIR/service.sh"
+[[ -f "$PLUGIN_DIR/shim/docker" ]] && chmod +x "$PLUGIN_DIR/shim/docker"
 
 # Regenerate the service file (always, to pick up new paths on update)
 cat > "$SERVICE_FILE" <<EOF

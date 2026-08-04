@@ -3,6 +3,60 @@
 All notable changes to the `daemon` plugin are documented here. This project
 follows [Semantic Versioning](https://semver.org/).
 
+## [2.11.0]
+
+### Added
+
+- **Docker container reaping** (`reapProcesses.docker`) — cleans up containers a daemon session
+  launched but leaked. **Motivated by an incident on 2026-08-04:** a `docker run --rm … grep …` was
+  auto-backgrounded by the Bash tool after the 2-minute timeout; the grep wedged (piping to `head`
+  inside a large file, stuck in write). Our existing reaper killed the bash process, but the
+  **container kept running** — `docker run` hands the workload to dockerd, so the container process is
+  a child of `containerd-shim` with a *fresh environment* and never carries our `DAEMON_SESSION_ID`
+  `/proc` tag, making it structurally invisible to the process reaper. `--rm` didn't fire (it cleans up
+  on container *exit*, not on client disconnect). The zombie container burned CPU for ~2h27m, starved
+  dbus/systemd-logind, and wedged the VM — a hard reboot was required.
+
+  **How it works — label at launch, reap by label:**
+  - When enabled, a daemon session gets a small `docker` shim prepended to its PATH (`shim/docker`).
+    The shim injects `--label claude.daemon.session=<session-id>` into `docker run` and
+    `docker compose run`, then execs the real docker. It's a transparent passthrough for every other
+    invocation and **fails open** — any parsing uncertainty runs the original command unmodified.
+  - The reaper then removes containers filtered strictly on that label — the exact same ownership
+    firewall as the process reaper. **Compose containers** (labelled `com.docker.compose.*`) and
+    **user-started containers** lack our label and are *never* matched.
+  - **Triggers:** on session stop/restart/teardown, all of the session's labeled containers are
+    removed; on the periodic sweep, a **live** session's labeled containers older than `maxAgeSeconds`
+    are removed (this is what would have caught the incident — that session stayed alive while the
+    container leaked), and a **crashed** session's containers are removed even when no tagged process
+    remains in `/proc`.
+
+  ```json
+  {
+    "reapProcesses": {
+      "docker": {
+        "enabled": false,
+        "maxAgeSeconds": 3600,
+        "protect": ["postgres", "my-dev-db"]
+      }
+    }
+  }
+  ```
+
+  - **`enabled`** (default `false`) — opt-in; when off, no shim is placed on PATH and nothing changes.
+  - **`maxAgeSeconds`** (default: inherits `reapProcesses.maxAgeSeconds`, else `3600`) — age threshold
+    for live-session container reaping.
+  - **`protect`** — regexes matched against container **name or image**; a match spares the container
+    (for an intentional long-lived container the session started, e.g. a dev database).
+  - **Safety.** Every `docker` call is `timeout`-wrapped so a wedged dockerd (the incident's failure
+    mode) can't hang the watcher; a failed/unreadable docker read skips that container rather than
+    guessing. Removal is `docker rm -f` (force stop + remove), scoped to our label only.
+  - **Limitations.** Only `docker run` / `docker compose run` invoked as `docker …` are labeled; a call
+    via an absolute path (`/usr/bin/docker`), or with global flags before the subcommand
+    (`docker --context x run`), or `docker compose -f f.yml run` (compose flags before `run`), bypasses
+    the shim and goes unlabeled (so it won't be auto-reaped) — fail-open by design. `docker-compose`
+    (v1, hyphenated) is not shimmed. Linux-only, like the rest of the reaper.
+
 ## [2.10.0]
 
 ### Added

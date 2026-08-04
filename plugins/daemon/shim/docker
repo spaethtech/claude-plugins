@@ -1,0 +1,59 @@
+#!/bin/bash
+# claude-daemon docker shim.
+#
+# Purpose: tag containers a daemon session launches so the watcher's reaper can clean up ones it
+# leaks (see the 2026-08-04 incident: a `docker run --rm` hung, the bash process was reaped, but the
+# container — reparented under dockerd with a fresh environment, so invisible to our /proc tag reaper —
+# kept burning CPU for 2h27m and wedged the host). This shim injects an ownership LABEL into
+# `docker run` / `docker compose run` so the reaper can find and remove exactly those containers
+# (`docker rm -f --filter label=claude.daemon.session=<sid>`), and nothing else.
+#
+# It is only placed on PATH for a daemon session that has enabled the feature (reapProcesses.docker),
+# and only labels when DAEMON_SESSION_ID is set. Every other invocation is a transparent passthrough.
+# It FAILS OPEN: any parsing uncertainty → exec the real docker unmodified. It must never break a
+# user's docker command.
+set -uo pipefail
+
+self="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)/$(basename "${BASH_SOURCE[0]}")"
+self_dir="$(dirname "$self")"
+
+# Resolve the REAL docker: first `docker` on PATH that isn't this shim (its own dir holds only this
+# file, so skipping that dir is enough; the explicit self-compare is belt-and-suspenders).
+real=""
+IFS=: read -ra _dirs <<< "${PATH:-}"
+for d in "${_dirs[@]}"; do
+  [[ -z "$d" || "$d" == "$self_dir" ]] && continue
+  if [[ -x "$d/docker" && "$d/docker" != "$self" ]]; then real="$d/docker"; break; fi
+done
+if [[ -z "$real" ]]; then
+  for c in /usr/bin/docker /usr/local/bin/docker /opt/homebrew/bin/docker; do
+    [[ -x "$c" && "$c" != "$self" ]] && { real="$c"; break; }
+  done
+fi
+if [[ -z "$real" ]]; then
+  echo "docker: real docker binary not found (claude-daemon shim on PATH but no docker installed)" >&2
+  exit 127
+fi
+
+# Inject the ownership label only for `run` / `compose run`, only inside a daemon session. `--label` is
+# a valid flag for both and may appear anywhere before the image/service, so inserting it immediately
+# after the subcommand token is always well-formed. Forms with global flags before the subcommand
+# (e.g. `docker --context x run`) or an absolute-path docker call bypass this and simply go unlabeled
+# — fail-open, documented; the container just won't be auto-reaped.
+if [[ -n "${DAEMON_SESSION_ID:-}" ]]; then
+  lbl="claude.daemon.session=${DAEMON_SESSION_ID}"
+  case "${1:-}" in
+    run)
+      shift
+      set -- run --label "$lbl" "$@"
+      ;;
+    compose)
+      if [[ "${2:-}" == "run" ]]; then
+        shift 2
+        set -- compose run --label "$lbl" "$@"
+      fi
+      ;;
+  esac
+fi
+
+exec "$real" "$@"

@@ -175,6 +175,55 @@ paused is never killed. Note this is **not** true hang-proof detection — a gen
 process is indistinguishable from a hung one by these signals, which is why `cpuIdle` leans on
 `protect[]` and why the whole feature is opt-in.
 
+#### Docker containers
+
+A container started with `docker run` is **not** a child of the `claude` process — dockerd runs it
+under `containerd-shim` with a fresh environment, so it never inherits the `DAEMON_SESSION_ID` tag and
+is invisible to the process reaper above. A hung one therefore survives even after its launching bash
+process is reaped (this bit us hard once — a wedged `docker run` grep burned CPU for ~2.5h and took the
+host down). Enable `reapProcesses.docker` to clean these up too:
+
+```json
+{
+  "reapProcesses": {
+    "docker": {
+      "enabled": true,
+      "maxAgeSeconds": 3600,
+      "protect": ["postgres", "my-dev-db"]
+    }
+  }
+}
+```
+
+| Key | Default | Meaning |
+|-----|---------|---------|
+| `enabled` | `false` | Opt in. When on, the session gets a `docker` shim on its PATH that stamps an ownership label on `docker run` / `docker compose run`; the reaper removes containers by that label |
+| `maxAgeSeconds` | inherits `reapProcesses.maxAgeSeconds` (else `3600`) | On a live session, remove labeled containers older than this |
+| `protect` | — | Regexes matched against container **name or image**; a match spares it (e.g. an intentional dev database) |
+
+**How ownership works — and why it's safe.** The shim injects `--label claude.daemon.session=<sid>`
+only into `docker run`/`compose run`, only inside a daemon session, and the reaper filters on exactly
+that label. It's the same firewall as the process reaper: **it can only ever remove containers this
+daemon labeled.** Compose-managed containers (`com.docker.compose.*`) and anything you start yourself
+have no such label and are never touched. Labeled containers are removed on session stop/restart, and —
+on a live session — once they exceed `maxAgeSeconds` (which is what actually catches a hung container
+whose bash launcher was already reaped). Every `docker` call is timeout-wrapped so a wedged dockerd
+can't hang the watcher.
+
+**Recommended pattern.** Run anything you want to stay up as a **`docker compose up` service** — those
+carry compose labels, not ours, so they're never reap candidates no matter how long they run. That
+leaves the agent's one-shot `docker run` / `docker compose run` commands as the only things age-reaping
+touches, which is exactly right: a one-shot is meant to exit, so one still running past `maxAgeSeconds`
+is a hang (the incident) rather than a service. Keep process age-reaping on too — with long-lived work
+living in containers, a *host* process outliving `maxAgeSeconds` is almost always leaked ephemera. The
+one edge to know: a genuine long (>`maxAgeSeconds`) one-shot run via `docker run` (a big build/test
+rather than compose) would be reaped — raise `docker.maxAgeSeconds` or `protect` it if that comes up.
+
+**Limitations.** Only `docker …` invocations are shimmed — a call by absolute path (`/usr/bin/docker`),
+with global flags before the subcommand (`docker --context x run`), or `docker compose -f f.yml run`
+(flags before `run`) bypasses the label and won't be auto-reaped (fail-open by design). `docker-compose`
+v1 (hyphenated) isn't shimmed. Linux-only.
+
 ### Auto-updating Claude
 
 A running `claude` process never upgrades in place — an update lands on disk but the running process

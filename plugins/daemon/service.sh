@@ -195,8 +195,25 @@ tagged_pids_for() {
   local sid="$1" environ pid
   for environ in /proc/[0-9]*/environ; do
     pid="${environ#/proc/}"; pid="${pid%/environ}"
+    # `grep && echo` is set -e-safe: grep as the LHS of && is exempt from errexit, so a no-match
+    # (exit 1) just skips the echo instead of aborting the loop.
     grep -qz "^DAEMON_SESSION_ID=${sid}\$" "$environ" 2>/dev/null && echo "$pid"
   done
+}
+
+# Every distinct DAEMON_SESSION_ID present in any readable /proc environ right now, deduped. Sibling of
+# tagged_pids_for; the periodic sweep uses this to discover which sessions have live/leaked processes.
+#
+# The `|| true` is LOAD-BEARING. Under the script's `set -euo pipefail`, a bare `grep` exits 1 on the
+# FIRST tag-less /proc entry (glob order hits kernel threads / pid 1 first), which aborts the whole
+# for-loop subshell before it reaches any tagged process — silently feeding the sweep an empty list, so
+# the reaper never runs. `|| true` neutralises the no-match exit. NOTE: a `grep ... | tr` form does NOT
+# fix this — pipefail makes the no-match pipeline exit 1 and set -e still aborts (verified). Keep `|| true`.
+tagged_sids_present() {
+  local e
+  for e in /proc/[0-9]*/environ; do
+    grep -az '^DAEMON_SESSION_ID=' "$e" 2>/dev/null || true
+  done | tr '\0' '\n' | sort -u | sed 's/^DAEMON_SESSION_ID=//'
 }
 
 # SIGTERM a list of pids, wait $1 seconds, then SIGKILL any survivors. No-op on an empty list, so the
@@ -223,7 +240,7 @@ kill_gracefully() {
 #                     "aged" : owner is LIVE          → kill only tagged procs older than maxAgeSeconds
 #
 # Policy comes from daemon.json's reapProcesses block. Defaults: reaping ON (orphan + on-restart),
-# grace 5s, maxAgeSeconds 0 (age-based OFF), no protect list. Every /proc read that fails
+# grace 5s, maxAgeSeconds 3600 (age-based ON, 1h ceiling), no protect list. Every /proc read that fails
 # (permission/race/unreadable age) SKIPS that process — we never signal on an inconclusive read,
 # mirroring the watcher's OOM-safe philosophy. A live claude pane pid is always excluded as
 # defense-in-depth so we can never fratricide a session.
@@ -846,14 +863,7 @@ while true; do
           reap_procs "$proj" "$sid" all         # no live owner → orphans, kill every tagged proc
         fi
       fi
-    done < <(
-      # grep opens each file itself (its own stderr → /dev/null), so an unreadable /proc entry is
-      # silent. Piping `< "$e"` here instead would leak the shell's redirection error past 2>/dev/null
-      # to journald for every foreign process — hundreds of lines a minute.
-      for e in /proc/[0-9]*/environ; do
-        grep -az '^DAEMON_SESSION_ID=' "$e" 2>/dev/null
-      done | tr '\0' '\n' | sort -u | sed 's/^DAEMON_SESSION_ID=//'
-    )
+    done < <(tagged_sids_present)
     unset SID_TO_PROJECT LIVE_SIDS
 
     # Prune stalled-tracking state for pids that no longer exist, so the maps don't grow unbounded.

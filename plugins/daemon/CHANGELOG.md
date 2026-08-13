@@ -3,6 +3,30 @@
 All notable changes to the `daemon` plugin are documented here. This project
 follows [Semantic Versioning](https://semver.org/).
 
+## [2.11.1]
+
+### Fixed
+
+- **The periodic process reaper never ran — under `set -euo pipefail` the sweep silently reaped
+  nothing.** The sweep's session-id scanner used a bare `grep` inside a `for` loop; `grep` exits 1 on
+  the first tag-less `/proc` entry (kernel threads / pid 1 sort first), and `errexit` aborted the whole
+  enumeration subshell *before it reached any tagged process*. The scanner returned an empty list, so
+  `reap_procs` (aged **and** orphan modes) and `detect_stalled_for_session` were **never invoked from
+  the periodic sweep**. A daemon up for days logged zero sweep reaps while over-age / orphaned / stalled
+  leaks piled up untouched. **If you relied on age/orphan/stalled reaping, you have effectively had
+  none.** On-stop reaping (`stop_session`) and Docker container reaping were unaffected — they call the
+  reaper directly, bypassing this scanner.
+
+  Fixed by neutralising grep's no-match exit with `|| true`, factored into a `tagged_sids_present()`
+  helper (sibling of `tagged_pids_for`), with a regression test in `tests/reaper-sweep.test.sh` that
+  asserts the scanner enumerates a live tagged session under `set -euo pipefail`. Note for anyone
+  tempted to "clean it up": a `grep … | tr` form does **not** fix this — `pipefail` makes the no-match
+  pipeline exit 1 and `errexit` still aborts. The `|| true` (or a `grep && …` guard) is required.
+
+- Corrected a stale `reap_procs` header comment that still said `maxAgeSeconds` defaults to `0`
+  (age-based off); the default has been `3600` (1h, on) since 2.9.0 — the drift went unnoticed because
+  the age path never actually executed (above).
+
 ## [2.11.0]
 
 ### Added

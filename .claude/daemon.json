@@ -9,7 +9,7 @@
     "idleMinutes": 5
   },
   "keepAlive": {
-    "enabled": true,
+    "enabled": false,
     "checkEveryMinutes": 30
   },
   "reapProcesses": {

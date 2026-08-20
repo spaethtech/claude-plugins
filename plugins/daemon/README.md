@@ -260,44 +260,25 @@ be the *sole* update driver, you can *optionally* add `"env": { "DISABLE_AUTOUPD
 the single source of update timing — but leaving Claude's auto-updater on is fine and they coexist
 without conflict. (Don't use `DISABLE_UPDATES`, which blocks `claude update` itself.)
 
-### Keeping remote control authenticated
+### Remote control & periodic re-login (known limitation)
 
-A Claude Pro/Max OAuth login (`/login`) refreshes its token only when the `claude` process makes a
-request near/after the access token's expiry. An **idle** daemon makes no requests, so after the refresh
-token's idle window lapses (a few days) you're forced to `/login` again — which silently breaks remote
-control. Remote control *requires* OAuth, and the long-lived-token alternatives (`claude setup-token`,
-API keys) don't support remote control, so a keep-alive is the way to hold the session open:
+Remote control **requires** an OAuth `/login` (the long-lived-token alternatives — `claude setup-token`,
+`ANTHROPIC_API_KEY` — don't support it). Claude Code's OAuth refresh tokens are single-use / rotating
+with a **fixed absolute lifetime that refreshing does not extend**, and multiple long-lived daemon
+sessions under one login **share a single credential file** and can rotate each other's tokens out,
+forcing a periodic `/login`. This is [documented Claude Code
+behaviour](https://code.claude.com/docs/en/troubleshoot-install.md), not something the daemon can work
+around — Claude Code 2.1.211+ added coordination that makes parallel sessions share their refresh more
+gracefully, so keep current.
 
-```json
-{
-  "keepAlive": {
-    "enabled": true,
-    "checkEveryMinutes": 30
-  }
-}
-```
+> **Removed in 2.12.0:** earlier versions shipped a `keepAlive` option that fired a periodic `claude -p`
+> to "hold the login open." It didn't work — it can't extend the fixed expiry, and its extra refresher
+> was a *third* token-rotator that made the multi-session collision **worse**. It's gone; drop any
+> `keepAlive` block from your `daemon.json`.
 
-| Key | Default | Meaning |
-|-----|---------|---------|
-| `enabled` | `false` | Opt in per project. Credentials are one per-user file shared by every session, so a single keep-alive covers all your daemon sessions; if several opt in, the smallest `checkEveryMinutes` wins |
-| `checkEveryMinutes` | `30` | How often the watcher checks the token's `expiresAt` |
-
-The watcher only actually refreshes once the access token is within ~5 min of expiry — firing earlier
-is a no-op (a request won't rotate the token until it's near/past expiry), so it makes at most ~3 trivial
-`claude -p` requests a day while idle. Each refresh **rotates the shared refresh token**, extending the
-idle window for every session.
-
-**It's best-effort and self-verifying.** Known refresh-token bugs mean a refresh can occasionally not
-take, so every attempt logs its outcome to journald (prefix `keep-alive:`) — rotated (success), ok but
-not advanced (possible bug), failed (refresh token likely dead → manual `/login`), or timed out. Watch
-it with:
-
-```bash
-journalctl --user -u claude-daemon -f | grep keep-alive
-```
-
-Only applies to a `claudeAiOauth` login on Linux (the credential file). API-key auth has no expiry, and
-macOS keeps credentials in Keychain rather than a file — both are skipped safely.
+If you still hit frequent re-logins with several concurrent sessions, the reliable manual workaround is
+to isolate each session's credentials: launch each with its own `CLAUDE_CONFIG_DIR` and do a one-time
+`/login` in each, so no two sessions share (and rotate) one token.
 
 ## Session Persistence
 

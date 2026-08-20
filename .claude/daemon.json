@@ -8,10 +8,6 @@
     "restart": "when-idle",
     "idleMinutes": 5
   },
-  "keepAlive": {
-    "enabled": false,
-    "checkEveryMinutes": 30
-  },
   "reapProcesses": {
     "docker": {
       "enabled": true

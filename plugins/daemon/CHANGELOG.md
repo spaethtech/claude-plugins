@@ -3,6 +3,37 @@
 All notable changes to the `daemon` plugin are documented here. This project
 follows [Semantic Versioning](https://semver.org/).
 
+## [2.12.0]
+
+### Fixed
+
+- **`reap_procs` / `detect_stalled_for_session` could crash the entire watcher (and every session with
+  it) on default config.** In aged/stalled mode the age lookup `age=$(ps -o etimes= -p "$pid" … | tr …)`
+  had no guard: when a tagged process exits between `tagged_pids_for` enumerating it and this `ps`, `ps`
+  exits 1, `pipefail` propagates it through the assignment, and `set -e` aborted the whole `service.sh`
+  **before** the `[[ "$age" =~ … ]]` guard on the next line — the `EXIT` trap (`stop_all`) then tore
+  down every managed tmux session; systemd restarted 10s later with a fresh, empty session. It fired at
+  irregular intervals because Claude's own short-lived Bash-tool processes inherit `DAEMON_SESSION_ID`
+  and race this constantly on a busy session. Reachable with no config (`reapProcesses` defaults on,
+  `maxAgeSeconds` 3600). **This was latent until 2.11.1** — before that fix the periodic sweep never
+  ran, so `reap_procs … aged` was never invoked; turning the reaper on exposed the race. Fixed with
+  `… ) || continue` at both sites (the same idiom the `/proc/stat` read already used). Regression test
+  in `tests/reap-race.test.sh` drives the real `reap_procs` against a pid that exits mid-sweep.
+- **Hardening:** the watcher now runs under `set -Eeuo pipefail` with an `ERR` trap that logs the
+  failing line, function, and command to the journal before exiting — so a future `set -e` abort leaves
+  a breadcrumb instead of a bare, undiagnosable `status=1/FAILURE`.
+
+### Removed
+
+- **`keepAlive` — removed entirely** (was added in 2.10.0, disabled by default since; confirmed
+  non-functional). It fired a periodic `claude -p` to "hold the OAuth login open," but the refresh
+  token has a **fixed absolute expiry that refreshing does not extend**, so it could not prevent the
+  eventual re-login — and as a *third* token-rotator sharing one credential file with your live
+  sessions, it made the documented [concurrent-session refresh
+  collision](https://code.claude.com/docs/en/troubleshoot-install.md) **worse**, not better. Drop any
+  `keepAlive` block from your `daemon.json` (it's now ignored). See the README's "Remote control &
+  periodic re-login" note for the real limitation and the `CLAUDE_CONFIG_DIR`-per-session workaround.
+
 ## [2.11.2]
 
 ### Fixed

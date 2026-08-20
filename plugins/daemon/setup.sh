@@ -20,14 +20,23 @@ EXPECTED=$(grep -o '"version"[[:space:]]*:[[:space:]]*"[^"]*"' "$PLUGIN_DIR/.cla
 CURRENT=$(cat "$DATA_DIR/.version" 2>/dev/null || true)
 
 if [[ "$CURRENT" != "$EXPECTED" ]]; then
-  # Write the marker BEFORE install.sh. On an update, install.sh runs
-  # `systemctl --user restart`, which tears down the service cgroup this hook is
-  # running in and SIGTERMs us mid-script. If the marker were written afterward it
-  # would never advance, so every subsequent session would re-trigger the update →
-  # restart → kill loop. Marking first makes the update idempotent: a restart that
-  # kills us still leaves CURRENT == EXPECTED, so the next session is a no-op.
-  echo "$EXPECTED" > "$DATA_DIR/.version"
-  bash "$PLUGIN_DIR/install.sh" --quiet
+  # install.sh writes $DATA_DIR/.version itself — but only AFTER prereqs pass and the unit is enabled,
+  # right before its `systemctl --user restart` (which tears down this hook's cgroup and SIGTERMs us).
+  # So a genuine prereq failure exits install.sh *before* the marker advances → we retry next session;
+  # a success writes the marker *before* the restart can kill us → no update loop. This distinguishes
+  # "install failed" from "killed by our own restart" without latching failures (the old write-first did
+  # not, so a single prereq failure silently disabled the daemon forever).
+  install_rc=0
+  bash "$PLUGIN_DIR/install.sh" --quiet || install_rc=$?
+  # 143 (SIGTERM) / 130 (SIGINT): killed by our own restart AFTER a successful install (marker already
+  # written) — not a failure. Anything else genuinely failed: leave a breadcrumb, since hook stderr is
+  # easily swallowed and CURRENT stays un-advanced so it'll retry.
+  if (( install_rc == 0 || install_rc == 143 || install_rc == 130 )); then
+    rm -f "$DATA_DIR/.install-error" 2>/dev/null || true
+  else
+    echo "claude-daemon install failed (exit $install_rc) on $(date). See what's wrong with: bash \"$PLUGIN_DIR/install.sh\"" \
+      > "$DATA_DIR/.install-error" 2>/dev/null || true
+  fi
 fi
 
 # Register this project with the watcher

@@ -317,7 +317,11 @@ With auto-update enabled, marketplace updates are pulled automatically. The watc
 ## Prerequisites
 
 - `tmux` (3.x+)
-- `claude` CLI on PATH
+- `claude` CLI installed as a real binary on a directory in `PATH` — **not** merely a shell alias or a
+  `~/.bashrc` PATH export. The installer captures `claude`'s directory and bakes it into the systemd
+  unit's `PATH`, so a native `~/.local/bin/claude` works even where the systemd *user manager*'s own
+  PATH omits `~/.local/bin` (older systemd, before ~v256). But if `claude` only exists as an alias, the
+  installer can't resolve it and will exit with an error (visible on stderr).
 - systemd with user service support (Linux)
 
 ## Commands

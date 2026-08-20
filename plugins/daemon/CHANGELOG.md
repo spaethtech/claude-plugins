@@ -3,6 +3,42 @@
 All notable changes to the `daemon` plugin are documented here. This project
 follows [Semantic Versioning](https://semver.org/).
 
+## [2.11.2]
+
+### Fixed
+
+Install-reliability fixes from a host where the daemon silently never installed (Debian 12, systemd
+252): `sudo -n` needed a password and `claude` wasn't on the service PATH — two ordinary environmental
+problems that combined into an unfalsifiable, permanent, zero-output failure.
+
+- **A failed install no longer latches the version marker (primary).** `setup.sh` used to write
+  `$DATA_DIR/.version` *before* running `install.sh`, so if `install.sh` exited non-zero at a prereq
+  check, the marker was already advanced — `CURRENT == EXPECTED` on every later session and the install
+  was **never retried**, even after the user fixed the underlying problem. The marker write now lives in
+  `install.sh`, after prereqs pass and the unit is enabled, immediately **before** the `systemctl
+  restart` that SIGTERMs the hook. So a genuine failure exits before the marker advances (and retries
+  next session), while a success writes it before the self-kill (no update→restart→kill loop). The
+  anti-loop property the old write-first ordering protected is preserved.
+- **Prereq errors are no longer swallowed by `--quiet`.** `setup.sh` calls `install.sh --quiet`, which
+  routed every `ERROR:` through the same `log()` that `--quiet` silenced — a host could fail to install
+  forever with zero diagnostics. Errors now go to stderr unconditionally via a separate `err()`, and
+  `setup.sh` drops a `$DATA_DIR/.install-error` breadcrumb (with the exit code and the command to
+  re-run) on any genuine failure, cleared on success.
+- **The systemd unit now bakes `claude`'s directory into `PATH`.** The service ran bare `claude`
+  (`--version`, `exec claude`, `claude update`) but the unit set no `PATH`, inheriting the systemd user
+  manager's — which on older systemd (before ~v256) omits `~/.local/bin`, where a native install lands,
+  making `claude` invisible to the service with no error. `install.sh` captures `claude`'s dir at
+  install time (it already requires `claude` to resolve) and writes `Environment=PATH=<dir>:…` into the
+  unit. Regenerated on every update.
+- **Routine restarts no longer log a spurious failure.** A normal `systemctl restart` SIGTERMs the
+  watcher (exit 143), which systemd logged as `Failed with result 'exit-code'` — a red herring for
+  anyone later debugging the service. Added `SuccessExitStatus=143` to the unit.
+
+Regression coverage in `tests/install-marker.test.sh`: a hermetic (fully stubbed) run asserts a
+successful install advances the marker and a failed one does not, that errors reach stderr under
+`--quiet`, that the unit carries the baked PATH + `SuccessExitStatus`, and that the marker write
+precedes the restart in source (so a SIGTERM mid-restart still leaves it advanced).
+
 ## [2.11.1]
 
 ### Fixed

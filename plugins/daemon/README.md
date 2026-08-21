@@ -4,18 +4,24 @@ A Claude Code plugin that runs persistent Claude sessions as a systemd service. 
 
 ## Install
 
-Install from the `spaethtech-plugins` marketplace via `/plugin` in Claude Code. The watcher service is set up automatically on the next session start.
+```bash
+# Add the marketplace (one time), then install the plugin
+claude plugin marketplace add spaethtech/claude-plugins --scope user
+claude plugin install daemon@spaethtech-plugins --scope user
+```
 
-To prompt collaborators to install, add this to your project's `.claude/settings.json`:
+Then **opt a project in**: add a `.claude/daemon.json` (an empty `{}` is enough — see
+[Opt-in](#opt-in-claudedaemonjson) below) and start one Claude session. The watcher service installs
+itself automatically on that first session, and starts a daemon session for the project.
+
+Or use the interactive `/plugin` UI inside Claude Code. To prompt collaborators to install, add the
+marketplace to your project's `.claude/settings.json`:
 
 ```json
 {
   "extraKnownMarketplaces": {
     "spaethtech-plugins": {
-      "source": {
-        "source": "github",
-        "repo": "spaethtech/claude-plugins"
-      }
+      "source": { "source": "github", "repo": "spaethtech/claude-plugins" }
     }
   }
 }
@@ -72,6 +78,60 @@ Its keys are also merged on top of the project's `.claude/settings.json` for the
   "tui": "fullscreen"
 }
 ```
+
+#### Full reference
+
+Every key is optional; values shown are the defaults (`sessionName` / `remoteLabel` default to the
+project directory name). Each is detailed in its section below.
+
+```json
+{
+  "sessionName": "prod-worker",
+  "remoteLabel": "Prod Worker — phone",
+  "remoteControlAtStartup": true,
+
+  "autoUpdate": {
+    "enabled": false,
+    "intervalMinutes": 360,
+    "restart": "when-idle",
+    "idleMinutes": 5
+  },
+
+  "reapProcesses": {
+    "enabled": true,
+    "graceSeconds": 5,
+    "maxAgeSeconds": 3600,
+    "protect": ["vite", "node .* dev"],
+
+    "stalled": {
+      "enabled": false,
+      "checks": 3,
+      "minAgeSeconds": 600,
+      "uninterruptible": true,
+      "cpuIdle": false
+    },
+
+    "docker": {
+      "enabled": false,
+      "maxAgeSeconds": 3600,
+      "protect": ["postgres", "redis"]
+    }
+  }
+}
+```
+
+- **Naming & session** — `sessionName` (tmux name), `remoteLabel` (Claude display label), plus **any**
+  Claude Code setting (`remoteControlAtStartup`, `tui`, …), merged over `settings.json` for the daemon
+  session only. See [Naming the session](#naming-the-session).
+- **`autoUpdate`** (off) — `enabled`, `intervalMinutes`, `restart` (`when-idle`/`immediate`/`never`),
+  `idleMinutes`. See [Auto-updating Claude](#auto-updating-claude).
+- **`reapProcesses`** — `enabled` (orphan/on-restart cleanup is always on when enabled), `graceSeconds`,
+  `maxAgeSeconds` (`0` disables live-session age reaping), `protect` (cmdline regexes). See
+  [Reaping stuck background processes](#reaping-stuck-background-processes).
+  - **`stalled`** (off) — hung-process detection: `checks`, `minAgeSeconds`, `uninterruptible`,
+    `cpuIdle`. See [Stalled / hung processes](#stalled--hung-processes).
+  - **`docker`** (off) — container reaping: `enabled`, `maxAgeSeconds` (inherits the process value),
+    `protect` (name/image regexes). See [Docker containers](#docker-containers).
 
 #### Naming the session
 

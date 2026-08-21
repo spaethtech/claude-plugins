@@ -3,6 +3,18 @@
 All notable changes to the `daemon` plugin are documented here. This project
 follows [Semantic Versioning](https://semver.org/).
 
+## [2.12.1]
+
+### Fixed
+
+- **`jq` is now auto-installed as a prerequisite.** The watcher parses every `daemon.json` with `jq`
+  (18 call sites), but only `tmux` was ever installed — so on a host without `jq` the daemon *ran* but
+  **silently ignored all per-project config** (`sessionName`/`remoteLabel`, `reapProcesses`,
+  `autoUpdate`, …) and fell back to defaults, because those reads are guarded (`… || echo <default>`).
+  `install.sh` now installs `jq` alongside `tmux` through a shared `ensure_cmd` helper, with a visible
+  stderr error if it can't (e.g. passwordless `sudo -n` isn't available). Package-manager coverage
+  broadened for both to apt / dnf / yum / pacman / brew.
+
 ## [2.12.0]
 
 ### Fixed

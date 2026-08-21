@@ -20,25 +20,35 @@ log() { $QUIET || echo "$@"; }
 # setup.sh about the version-marker latch this pairs with).
 err() { echo "$@" >&2; }
 
+# Ensure a required command exists, installing it via the system package manager if missing. Package
+# name is assumed to equal the command name (true for tmux and jq). Returns non-zero (caller exits) if
+# it can't be made available — with a visible reason, since `sudo -n` may need a password.
+ensure_cmd() {
+  local cmd="$1" rc=0
+  command -v "$cmd" &>/dev/null && return 0
+  log "Installing $cmd..."
+  if   command -v apt-get &>/dev/null; then sudo -n apt-get install -y -qq "$cmd" 2>/dev/null || rc=$?
+  elif command -v dnf     &>/dev/null; then sudo -n dnf install -y -q "$cmd"     2>/dev/null || rc=$?
+  elif command -v yum     &>/dev/null; then sudo -n yum install -y -q "$cmd"     2>/dev/null || rc=$?
+  elif command -v pacman  &>/dev/null; then sudo -n pacman -S --noconfirm "$cmd" 2>/dev/null || rc=$?
+  elif command -v brew    &>/dev/null; then brew install "$cmd"                  2>/dev/null || rc=$?
+  else err "ERROR: $cmd is required but no supported package manager was found. Install it manually."; return 1
+  fi
+  if (( rc != 0 )) || ! command -v "$cmd" &>/dev/null; then
+    err "ERROR: Failed to install $cmd (sudo -n may require a password). Install it manually, e.g.: sudo apt-get install $cmd"
+    return 1
+  fi
+}
+
 # The version this run marks complete once it succeeds. Written to $DATA_DIR/.version immediately before
 # the restart at the end (which SIGTERMs this hook) — so a genuine failure, which exits earlier, never
 # advances the marker and the next SessionStart retries. See setup.sh.
 EXPECTED_VERSION=$(grep -o '"version"[[:space:]]*:[[:space:]]*"[^"]*"' "$PLUGIN_DIR/.claude-plugin/plugin.json" | sed 's/.*"\([^"]*\)"$/\1/')
 
-# Prerequisites
-if ! command -v tmux &>/dev/null; then
-  log "Installing tmux..."
-  if command -v apt-get &>/dev/null; then
-    sudo -n apt-get install -y -qq tmux 2>/dev/null || { err "ERROR: Failed to install tmux. Run: sudo apt-get install tmux"; exit 1; }
-  elif command -v yum &>/dev/null; then
-    sudo -n yum install -y -q tmux 2>/dev/null || { err "ERROR: Failed to install tmux. Run: sudo yum install tmux"; exit 1; }
-  elif command -v brew &>/dev/null; then
-    brew install tmux 2>/dev/null || { err "ERROR: Failed to install tmux. Run: brew install tmux"; exit 1; }
-  else
-    err "ERROR: tmux is required. Install it manually."
-    exit 1
-  fi
-fi
+# Prerequisites. tmux hosts the sessions; jq parses every daemon.json in the watcher (service.sh) —
+# without it the watcher silently ignores all per-project config and falls back to defaults.
+ensure_cmd tmux || exit 1
+ensure_cmd jq   || exit 1
 if ! command -v claude &>/dev/null; then
   err "ERROR: claude is not on PATH (as seen by this installer). Note the systemd user service needs claude"
   err "       resolvable from the systemd user manager's PATH — a shell alias or a ~/.bashrc PATH export"

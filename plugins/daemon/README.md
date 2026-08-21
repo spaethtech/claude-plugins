@@ -297,7 +297,12 @@ With auto-update enabled, marketplace updates are pulled automatically. The watc
 
 ## Prerequisites
 
-- `tmux` (3.x+)
+- `tmux` (3.x+) — hosts the sessions
+- `jq` — the watcher parses every `daemon.json` with it; without it the daemon runs but silently ignores
+  all per-project config and uses defaults
+- `tmux` and `jq` are **auto-installed if missing** via the system package manager (apt / dnf / yum /
+  pacman / brew), provided passwordless `sudo -n` works; otherwise the installer errors (on stderr) with
+  the manual command to run
 - `claude` CLI installed as a real binary on a directory in `PATH` — **not** merely a shell alias or a
   `~/.bashrc` PATH export. The installer captures `claude`'s directory and bakes it into the systemd
   unit's `PATH`, so a native `~/.local/bin/claude` works even where the systemd *user manager*'s own

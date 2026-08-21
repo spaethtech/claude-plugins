@@ -37,6 +37,34 @@ else
 fi
 rm -f "$harness"; rm -rf "$proj"
 
+# --- Functional: reap_procs must survive with NO tmux server (the live_panes crash) ---
+# stop_session kills the last session → tmux server exits → `tmux list-panes -a` returns non-zero →
+# without `|| true` set -e aborts the watcher on the very next daemon.json edit.
+proj="$(mktemp -d)"; mkdir -p "$proj/.claude"; echo '{}' > "$proj/.claude/daemon.json"
+harness="$(mktemp)"
+{
+  echo 'set -Eeuo pipefail'
+  echo 'tmux() { return 1; }'                        # simulate: no tmux server (list-panes fails)
+  extract kill_gracefully
+  extract reap_procs
+  echo 'tagged_pids_for() { :; }'                    # no tagged pids; we only exercise the live_panes line
+  echo "reap_procs '$proj' testsid all"
+} > "$harness"
+if bash "$harness"; then
+  ok "reap_procs survives with no tmux server (live_panes guarded)"
+else
+  bad "reap_procs aborted with no tmux server (rc=$?) — live_panes crash is back"
+fi
+rm -f "$harness"; rm -rf "$proj"
+
+# --- Structural: every tmux list-panes site is guarded with || true ---
+lp_unguarded="$(grep -n 'tmux list-panes' "$SVC" | grep -v '|| true' || true)"
+[[ -z "$lp_unguarded" ]] && ok "all tmux list-panes sites are guarded with || true" \
+  || bad "unguarded tmux list-panes site(s):"$'\n'"$lp_unguarded"
+
+# --- Structural: jq preflight present ---
+grep -q 'FATAL.*jq not found' "$SVC" && ok "jq runtime preflight present" || bad "missing jq preflight"
+
 # --- Structural: every ps -o etimes call site is guarded with || continue ---
 unguarded="$(grep -n 'ps -o etimes' "$SVC" | grep -v '|| continue' || true)"
 if [[ -z "$unguarded" ]]; then

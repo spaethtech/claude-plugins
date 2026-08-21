@@ -6,6 +6,14 @@ set -Eeuo pipefail
 # breadcrumb in the journal — a bare `status=1/FAILURE` is otherwise undiagnosable without a bisect.
 trap 'rc=$?; echo "service.sh: FATAL errexit (rc=$rc) at line $LINENO in ${FUNCNAME[*]:-main}: [$BASH_COMMAND]" >&2' ERR
 
+# Preflight: jq is a HARD dependency — every daemon.json value is read through it. Without jq the reads
+# fall back to their `// default` and the watcher runs while silently ignoring ALL config. Fail loudly
+# instead (the installer normally installs jq; this catches a host where it went missing afterward).
+if ! command -v jq >/dev/null 2>&1; then
+  echo "service.sh: FATAL — jq not found; daemon.json cannot be parsed. Install jq (e.g. sudo apt-get install jq)." >&2
+  exit 1
+fi
+
 PLUGIN_DIR="${DAEMON_PLUGIN_DIR:?DAEMON_PLUGIN_DIR not set}"
 DATA_DIR="${DAEMON_DATA_DIR:?DAEMON_DATA_DIR not set}"
 PROJECTS_FILE="$DATA_DIR/projects"
@@ -98,7 +106,10 @@ remote_label_for() {
 # The installed claude version, normalised to bare X.Y.Z (drops the " (Claude Code)" suffix). Empty if
 # claude can't be run — callers treat empty as "unknown" and never restart on it.
 claude_version() {
-  claude --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1
+  # `|| true`: if `claude --version` yields no match (claude missing/broken, or mid-`claude update`),
+  # grep exits 1 and pipefail would make this fail — crashing the bare `disk_version=$(claude_version)`
+  # caller under set -e. Empty output is the intended "unknown" signal; callers never restart on it.
+  claude --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true
 }
 
 # Read a field from a project's autoUpdate block, echoing $3 when the file/key is missing or unreadable.
@@ -264,7 +275,12 @@ reap_procs() {
   # Live claude pane pids (across all sessions) — never a reap target. If tmux is unreachable this is
   # empty; acceptable, because a dead session has no panes and a stopping one is being killed anyway.
   local live_panes
-  live_panes=" $(tmux list-panes -a -F '#{pane_pid}' 2>/dev/null | tr '\n' ' ') "
+  # `|| true` is REQUIRED: `tmux list-panes -a` exits non-zero when there's NO server (the last session
+  # was just killed — exactly the stop_session → reap_procs path), and 2>/dev/null hides only stderr, not
+  # the exit. Without it, pipefail + set -e abort the whole watcher (and the EXIT trap kills every
+  # session) — making any daemon.json edit on the last session a guaranteed crash. Empty is the intended
+  # "no live panes" result.
+  live_panes=" $(tmux list-panes -a -F '#{pane_pid}' 2>/dev/null | tr '\n' ' ' || true) "
 
   local -a targets=()
   local pid cmdline p skip age
@@ -331,7 +347,12 @@ detect_stalled_for_session() {
   mapfile -t protect < <(jq -r '.reapProcesses.protect[]? // empty' "$dj" 2>/dev/null || true)
 
   local live_panes
-  live_panes=" $(tmux list-panes -a -F '#{pane_pid}' 2>/dev/null | tr '\n' ' ') "
+  # `|| true` is REQUIRED: `tmux list-panes -a` exits non-zero when there's NO server (the last session
+  # was just killed — exactly the stop_session → reap_procs path), and 2>/dev/null hides only stderr, not
+  # the exit. Without it, pipefail + set -e abort the whole watcher (and the EXIT trap kills every
+  # session) — making any daemon.json edit on the last session a guaranteed crash. Empty is the intended
+  # "no live panes" result.
+  live_panes=" $(tmux list-panes -a -F '#{pane_pid}' 2>/dev/null | tr '\n' ' ' || true) "
 
   local -a kill_list=()
   local pid stat_line rest state cpu age prev stalled_now cmdline p skip

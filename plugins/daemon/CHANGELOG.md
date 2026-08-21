@@ -3,6 +3,29 @@
 All notable changes to the `daemon` plugin are documented here. This project
 follows [Semantic Versioning](https://semver.org/).
 
+## [2.12.2]
+
+### Fixed
+
+- **`live_panes` crash — the same `set -e` class as 2.12.0's `ps` fix, but worse.** In `reap_procs` and
+  `detect_stalled_for_session`, `live_panes=" $(tmux list-panes -a … | tr …) "` is unguarded;
+  `tmux list-panes -a` exits non-zero when there's **no server**, `pipefail` propagates it, and `set -e`
+  aborts the whole watcher (whose EXIT trap then kills every session). Unlike the `ps` race this is
+  **deterministic**: `stop_session` kills the session then calls `reap_procs … all`, and when it was the
+  last session the tmux server has already exited — so **any `daemon.json` edit on the last/only session
+  reliably crashed the daemon** (the mtime watcher's stop→start). Fixed with `… | tr … || true` at both
+  sites, implementing what the existing comment already promised.
+- **`claude_version` hardened.** Its pipeline exits 1 when `claude --version` yields no match (claude
+  missing/broken, or mid-`claude update`), which would crash the bare `disk_version=$(claude_version)`
+  read that runs every loop. Added `|| true` so it returns empty ("unknown") instead of failing.
+- **`jq` runtime preflight.** `service.sh` now exits loudly at startup if `jq` is missing, rather than
+  running while silently ignoring all `daemon.json` config (every read falls back to its default).
+  Complements the install-time `jq` install added in 2.12.1.
+
+The `ERR` breadcrumb trap added in 2.12.0 (`set -Eeuo pipefail` + trap) now surfaces any remaining
+latent `set -e` abort in the journal with its line/function/command, rather than a bare `status=1`.
+Regression test `tests/reap-race.test.sh` extended to run a reap with no tmux server.
+
 ## [2.12.1]
 
 ### Fixed

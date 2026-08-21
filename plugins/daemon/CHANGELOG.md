@@ -3,6 +3,30 @@
 All notable changes to the `daemon` plugin are documented here. This project
 follows [Semantic Versioning](https://semver.org/).
 
+## [2.12.4]
+
+### Fixed
+
+- **`tagged_pids_for()` leaked a non-zero exit status, tripping the ERR trap every sweep.** A different
+  flavour of the `set -e` class than 2.12.3 swept: not an unguarded *command*, but a *function's return
+  value*. Its `grep && echo` line keeps a no-match from aborting the loop (grep as LHS of `&&` is
+  errexit-exempt), but the `&&`-list's status still becomes the loop's — and therefore the function's —
+  return value. `grep` exits 1 on no-match and **2 on an unreadable `/proc/<pid>/environ`** (another
+  uid's process — routine when containers run), so the last iteration left `tagged_pids_for` returning
+  non-zero. Both callers consume it via `done < <(tagged_pids_for …)` under `set -Eeuo pipefail`, so the
+  ERR trap fired **twice every ~64 s sweep**, filling the journal with `FATAL errexit` lines.
+
+  **Impact was journal noise, not broken reaping** — verified: the reaper still evaluates and kills
+  candidates (the pids are emitted to stdout *before* the function returns; a process-substitution's
+  exit status isn't checked by the parent, so the reaper doesn't abort). But the spam buried real
+  errors and defeated the ERR trap's whole purpose (it cried wolf every minute).
+
+  Fixed with `… && echo "$pid" || true` plus an explicit `return 0`. Closed the class by pinning
+  `return 0` on the other pure stdout-emitting helpers (`tagged_sids_present`, `session_id_for`,
+  `tmux_session_for`, `remote_label_for`) — safe today, but one loop-body edit from the same leak.
+  Regression test in `tests/reap-race.test.sh` asserts `tagged_pids_for` returns 0 and trips no trap
+  when consumed via `<()`, plus a structural check that each helper pins its status.
+
 ## [2.12.3]
 
 ### Fixed

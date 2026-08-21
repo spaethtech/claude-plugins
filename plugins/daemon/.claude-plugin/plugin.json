@@ -1,6 +1,6 @@
 {
   "name": "daemon",
-  "version": "2.12.3",
+  "version": "2.12.4",
   "description": "Run Claude Code as a persistent systemd user service via tmux — auto-restarts on crash, survives logout, remote-controllable from claude.ai. Opt in per project with a .claude/daemon.json (sessionName/remoteLabel naming, settings overrides). Reaps leaked/orphaned background processes the session spawned (including Docker containers it launched), optionally kills stalled/hung ones, and keeps Claude current by running `claude update` and restarting idle sessions to adopt it.",
   "author": {
     "name": "SpaethTech"

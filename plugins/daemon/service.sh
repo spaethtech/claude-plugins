@@ -63,6 +63,7 @@ last_update_epoch=0
 session_id_for() {
   echo -n "$1" | sha256sum | \
     sed 's/^\(.\{8\}\)\(.\{4\}\)\(.\{4\}\)\(.\{4\}\)\(.\{12\}\).*/\1-\2-\3-\4-\5/'
+  return 0   # emits on stdout; status not meaningful (see tagged_pids_for)
 }
 
 # tmux session NAME for a project — the `sessionName` from daemon.json used verbatim (NO `claude-`
@@ -84,6 +85,7 @@ tmux_session_for() {
   fi
   # Neutralize only the tmux-hostile characters; keep the rest verbatim.
   printf '%s' "$name" | sed 's/[.:[:space:]]/-/g'
+  return 0   # emits on stdout; status not meaningful
 }
 
 # Claude DISPLAY label (the `-n` flag — what shows in claude.ai, the mobile app, and Desktop). A
@@ -101,6 +103,7 @@ remote_label_for() {
   else
     basename "$project_dir"
   fi
+  return 0   # emits on stdout; status not meaningful
 }
 
 # The installed claude version, normalised to bare X.Y.Z (drops the " (Claude Code)" suffix). Empty if
@@ -208,10 +211,16 @@ tagged_pids_for() {
   local sid="$1" environ pid
   for environ in /proc/[0-9]*/environ; do
     pid="${environ#/proc/}"; pid="${pid%/environ}"
-    # `grep && echo` is set -e-safe: grep as the LHS of && is exempt from errexit, so a no-match
-    # (exit 1) just skips the echo instead of aborting the loop.
-    grep -qz "^DAEMON_SESSION_ID=${sid}\$" "$environ" 2>/dev/null && echo "$pid"
+    # `grep && echo` keeps a no-match from aborting the LOOP (grep as LHS of && is errexit-exempt), but
+    # the &&-list's status still becomes the loop's — and therefore this FUNCTION's — return value. grep
+    # exits 1 on no-match and 2 on an unreadable environ (another uid's process — routine when containers
+    # run), so the last iteration leaves a non-zero return. Both callers use `done < <(tagged_pids_for)`
+    # under errtrace, so that non-zero trips the ERR trap every sweep (harmless to the reaper — data is
+    # already emitted — but fills the journal with FATAL noise). `|| true` neutralises it per-iteration;
+    # the `return 0` below pins the contract regardless of how the loop body evolves.
+    grep -qz "^DAEMON_SESSION_ID=${sid}\$" "$environ" 2>/dev/null && echo "$pid" || true
   done
+  return 0   # status is NOT meaningful — output on stdout is
 }
 
 # Every distinct DAEMON_SESSION_ID present in any readable /proc environ right now, deduped. Sibling of
@@ -227,6 +236,7 @@ tagged_sids_present() {
   for e in /proc/[0-9]*/environ; do
     grep -az '^DAEMON_SESSION_ID=' "$e" 2>/dev/null || true
   done | tr '\0' '\n' | sort -u | sed 's/^DAEMON_SESSION_ID=//'
+  return 0   # stdout is the contract; pin status so an edit can't leak non-zero to <() callers
 }
 
 # SIGTERM a list of pids, wait $1 seconds, then SIGKILL any survivors. No-op on an empty list, so the

@@ -74,6 +74,31 @@ bare_stat="$(grep -n 'stat -c %Y "\$daemon_json"' "$SVC" | grep -vE '2>/dev/null
 [[ -z "$bare_stat" ]] && ok "all stat on daemon.json are guarded" \
   || bad "unguarded stat on daemon.json:"$'\n'"$bare_stat"
 
+# --- Behavioral: tagged_pids_for's return status must not trip the ERR trap (2.12.4) ---
+# It communicates via stdout; its last loop iteration's grep exits 1 (no match) or 2 (unreadable
+# environ — another uid's process), which would leak out through `done < <(tagged_pids_for)` and fire
+# the errtrace ERR trap every sweep. Assert it returns 0 and trips no trap.
+sentinel="$(mktemp -u)"; h="$(mktemp)"
+{
+  echo 'set -Eeuo pipefail'
+  echo "trap 'touch \"$sentinel\"' ERR"
+  extract tagged_pids_for
+  echo 'while IFS= read -r _; do :; done < <(tagged_pids_for no-such-sid-xyz)'
+  echo 'tagged_pids_for no-such-sid-xyz >/dev/null; echo rc=$?'
+} > "$h"
+out="$(bash "$h" 2>/dev/null)"; rm -f "$h"
+[[ "$out" == "rc=0" ]] && ok "tagged_pids_for returns 0 on no-match / unreadable environ" \
+  || bad "tagged_pids_for returned non-zero: [$out]"
+[[ ! -e "$sentinel" ]] && ok "tagged_pids_for via <() does not trip the ERR trap" \
+  || bad "tagged_pids_for tripped the ERR trap (return-status leak)"
+rm -f "$sentinel"
+
+# --- Structural: stdout-emitting helpers pin their status with an explicit return 0 ---
+for fn in tagged_pids_for tagged_sids_present session_id_for tmux_session_for remote_label_for; do
+  awk "/^$fn\\(\\) \\{/{f=1} f{print} f&&/^\\}/{exit}" "$SVC" | grep -q 'return 0' \
+    && ok "$fn pins 'return 0'" || bad "$fn is missing an explicit 'return 0'"
+done
+
 # --- Structural: every ps -o etimes call site is guarded with || continue ---
 unguarded="$(grep -n 'ps -o etimes' "$SVC" | grep -v '|| continue' || true)"
 if [[ -z "$unguarded" ]]; then

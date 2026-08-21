@@ -127,7 +127,7 @@ session_idle() {
   [[ "$idle_min" =~ ^[0-9]+$ ]] || idle_min=5
   local sid transcript mtime now
   sid="$(session_id_for "$project_dir")"
-  transcript="$(find "$HOME/.claude/projects" -name "${sid}.jsonl" 2>/dev/null | head -1)"
+  transcript="$(find "$HOME/.claude/projects" -name "${sid}.jsonl" 2>/dev/null | head -1 || true)"
   [[ -z "$transcript" ]] && return 0
   mtime="$(stat -c %Y "$transcript" 2>/dev/null)" || return 1
   now="$(date +%s)"
@@ -153,7 +153,7 @@ start_session() {
   local settings_flag=""
   if [[ -f "$daemon_json" ]]; then
     settings_flag="--settings $daemon_json"
-    MTIMES["$project_dir"]="$(stat -c %Y "$daemon_json")"
+    MTIMES["$project_dir"]="$(stat -c %Y "$daemon_json" 2>/dev/null || echo none)"
   else
     MTIMES["$project_dir"]="none"
   fi
@@ -181,11 +181,18 @@ start_session() {
   # reparenting to PID 1, a background process leaked by a dead/restarted claude is still attributable
   # to this session — and since the tag propagates to the whole descendant tree, enumerating tagged
   # PIDs enumerates the entire leak. The reaper (reap_procs) keys off exactly this.
-  tmux new-session -d -s "$session" -c "$project_dir" \
+  # `if ! tmux …` (condition context) keeps a failed new-session from aborting the watcher under set -e.
+  # It CAN fail — two projects with the same `sessionName` collide (README), and the second won't start.
+  # Reset this project's tracking so the next scan cleanly retries rather than believing it's running.
+  if ! tmux new-session -d -s "$session" -c "$project_dir" \
     -e "DAEMON_SESSION_NAME=$remote_label" \
     -e "DAEMON_SESSION_ID=$session_id" \
     "${extra_env[@]}" \
-    "bash -lc '$inner'"
+    "bash -lc '$inner'"; then
+    echo "start_session: tmux new-session failed for '$session' (duplicate sessionName?) — will retry next scan" >&2
+    unset "SESSION_NAMES[$project_dir]" "MTIMES[$project_dir]"
+    return 0
+  fi
 
   # Record the version this session launched with, so the loop can later detect it's stale and (per
   # the autoUpdate policy) restart it to adopt a newer on-disk claude.
@@ -617,14 +624,18 @@ while true; do
   # Check for plugin update (newer version in cache)
   cache_parent="$(dirname "$PLUGIN_DIR")"
   if [[ -d "$cache_parent" ]]; then
-    latest="$(ls -1 "$cache_parent" | sort -V | tail -1)"
+    # `|| true` so a transient ls failure can't abort the watcher; `-n "$latest"` so an empty result
+    # (ls failed) can't be mistaken for a new version and trigger an update to an empty path.
+    latest="$(ls -1 "$cache_parent" 2>/dev/null | sort -V | tail -1 || true)"
     current="$(basename "$PLUGIN_DIR")"
-    if [[ "$latest" != "$current" ]]; then
+    if [[ -n "$latest" && "$latest" != "$current" ]]; then
       echo "Plugin updated: $current → $latest"
       new_plugin_dir="$cache_parent/$latest"
       stop_all
+      # If the self-update install fails, log and exit(0) cleanly rather than crashing with a
+      # misleading status=1 — systemd (Restart=always) relaunches the current watcher, which retries.
       CLAUDE_PLUGIN_ROOT="$new_plugin_dir" CLAUDE_PLUGIN_DATA="$DATA_DIR" \
-        bash "$new_plugin_dir/install.sh" --quiet
+        bash "$new_plugin_dir/install.sh" --quiet || echo "Watcher self-update install failed; will retry" >&2
       echo "Watcher updated and restarted."
       exit 0
     fi
@@ -742,7 +753,7 @@ while true; do
       daemon_json="$project_dir/.claude/daemon.json"
       current_mtime="none"
       if [[ -f "$daemon_json" ]]; then
-        current_mtime="$(stat -c %Y "$daemon_json")"
+        current_mtime="$(stat -c %Y "$daemon_json" 2>/dev/null || echo none)"
       fi
       if [[ "${MTIMES[$project_dir]:-}" != "$current_mtime" ]]; then
         echo "daemon.json changed: $project_dir"
@@ -779,7 +790,7 @@ while true; do
         SESSION_NAMES["$project_dir"]="$expected_session"
         daemon_json="$project_dir/.claude/daemon.json"
         if [[ -f "$daemon_json" ]]; then
-          MTIMES["$project_dir"]="$(stat -c %Y "$daemon_json")"
+          MTIMES["$project_dir"]="$(stat -c %Y "$daemon_json" 2>/dev/null || echo none)"
         else
           MTIMES["$project_dir"]="none"
         fi

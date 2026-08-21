@@ -65,6 +65,15 @@ lp_unguarded="$(grep -n 'tmux list-panes' "$SVC" | grep -v '|| true' || true)"
 # --- Structural: jq preflight present ---
 grep -q 'FATAL.*jq not found' "$SVC" && ok "jq runtime preflight present" || bad "missing jq preflight"
 
+# --- Structural: tmux new-session is guarded (collision must not abort the watcher) ---
+grep -q 'if ! tmux new-session' "$SVC" && ok "tmux new-session is guarded (if !)" \
+  || bad "tmux new-session is unguarded (a sessionName collision would crash the watcher)"
+
+# --- Structural: no bare stat on daemon.json (race during edits must not abort) ---
+bare_stat="$(grep -n 'stat -c %Y "\$daemon_json"' "$SVC" | grep -vE '2>/dev/null|return 1' || true)"
+[[ -z "$bare_stat" ]] && ok "all stat on daemon.json are guarded" \
+  || bad "unguarded stat on daemon.json:"$'\n'"$bare_stat"
+
 # --- Structural: every ps -o etimes call site is guarded with || continue ---
 unguarded="$(grep -n 'ps -o etimes' "$SVC" | grep -v '|| continue' || true)"
 if [[ -z "$unguarded" ]]; then

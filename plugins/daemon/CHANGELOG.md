@@ -3,6 +3,31 @@
 All notable changes to the `daemon` plugin are documented here. This project
 follows [Semantic Versioning](https://semver.org/).
 
+## [2.12.3]
+
+### Fixed
+
+Proactive audit of the whole `service.sh` watcher for the `set -e`/`pipefail` abort class that caused
+the last three crashes (each takes the daemon — and every session — down). Every `(( … ))` is in a
+condition or guarded, and the `mapfile` / `read <<<` / `kill … || true` sites are safe; these were the
+remaining unguarded fallible commands:
+
+- **`tmux new-session` was unguarded** — it exits non-zero when two projects share a `sessionName`
+  (the collision the README documents), which would abort the watcher. Now wrapped in `if ! … ; then`
+  with a logged warning and a tracking-map reset so the next scan retries cleanly.
+- **Three bare `stat -c %Y "$daemon_json"`** (in `start_session` and the reload/adopt branches) could
+  crash if the file vanished mid-`stat` — a real race, since editing `daemon.json` is exactly what
+  triggers the restart that runs them. Now `2>/dev/null || echo none`.
+- **The self-update path** — `ls -1 "$cache_parent" | …` and `bash install.sh` were unguarded; an ls
+  failure could crash, and an empty result could trigger an update to an empty path. Guarded with
+  `|| true` + a non-empty check, and the install with `|| echo … >&2` (clean logged exit + systemd
+  retry instead of a misleading `status=1`).
+- **`find … | head -1`** for the transcript now ends `|| true` (defensive against a SIGPIPE exit).
+
+Regression test `tests/reap-race.test.sh` gains structural guards asserting `tmux new-session` stays
+wrapped and no bare `stat` on `daemon.json` returns. (`plugin_value_in`'s `grep; rc=$?` was left alone —
+it's called in an `if val=$(…)` condition, where `set -e` is suspended, so it's already safe.)
+
 ## [2.12.2]
 
 ### Fixed
